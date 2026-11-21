@@ -26,7 +26,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000025  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000026  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -1006,6 +1006,37 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
   }
 
   return false;
+}
+
+//--------------------------------------------------
+// Direct (unicast) Level Control commands to the dimmer endpoint, e.g. brightness from
+// Zigbee2MQTT. Group-addressed ones are handled in the pre-message callback above; without
+// this, direct ones reach the framework, which has no Level Control command handler and
+// answers UNSUP_COMMAND.
+
+bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
+{
+  if (cmd->apsFrame->clusterId != ZCL_LEVEL_CONTROL_CLUSTER_ID
+      || cmd->apsFrame->destinationEndpoint != DIMMER_ENDPOINT
+      || cmd->type != SL_ZIGBEE_INCOMING_UNICAST
+      || !cmd->clusterSpecific
+      || cmd->mfgSpecific
+      || cmd->direction != ZCL_DIRECTION_CLIENT_TO_SERVER) {
+    return false;
+  }
+
+  switch (cmd->commandId) {
+    case 0x00: case 0x04:   // Move to Level (with On/Off)
+    case 0x01: case 0x05:   // Move (with On/Off)
+    case 0x03: case 0x07:   // Stop (with On/Off)
+      handle_level_control_cmd(cmd->commandId,
+                               cmd->buffer + cmd->payloadStartIndex,
+                               (uint8_t)(cmd->bufLen - cmd->payloadStartIndex));
+      sl_zigbee_af_send_default_response(cmd, SL_ZIGBEE_ZCL_STATUS_SUCCESS);
+      return true;
+    default:
+      return false;         // framework answers UNSUP_COMMAND
+  }
 }
 
 //--------------------------------------------------
