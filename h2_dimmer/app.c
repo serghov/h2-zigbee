@@ -17,6 +17,7 @@
 #include "btl_interface.h"
 #include "slot-manager.h"
 #include "h2_relay.h"
+#include "h2_tap.h"
 #include "h2_encoder.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -26,7 +27,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000026  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000027  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -666,6 +667,7 @@ static void encoder_tick_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
   h2_relay_process_rx();
+  h2_tap_tick();
   h2_encoder_tick();
 
   // MCU-side level transition tick (every LC_TICK_MS)

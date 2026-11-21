@@ -1,5 +1,6 @@
 #include "app/framework/include/af.h"
 #include "h2_relay.h"
+#include "h2_tap.h"
 #include "uartdrv.h"
 #include "sl_uartdrv_instances.h"
 #include "em_eusart.h"
@@ -82,6 +83,8 @@ static void relay_send_packet(uint16_t type, uint8_t cmd,
     sl_zigbee_app_debug_print("%02X", buf[8 + i]);
   }
   sl_zigbee_app_debug_println("]");
+
+  h2_tap_record(0, buf, total);
 
   // Hold EM1 during TX — EM2 would stop the EUSART HF clock and cause
   // glitch pulses on the TX line that corrupt every packet
@@ -257,6 +260,8 @@ void h2_relay_process_rx(void)
     sl_zigbee_app_debug_println("]");
   }
 
+  h2_tap_record(1, rx_dispatch_buf, rx_dispatch_len);
+
   // Send ACK echoing the wall module's sequence number,
   // but only for measurement reports (cmd=0x05), not for wall ACKs (cmd=0x03)
   if (rx_dispatch_buf[4] == 0x05) {
@@ -324,6 +329,15 @@ void h2_relay_process_rx(void)
   }
 
   rx_packet_ready = false;
+}
+
+void h2_relay_send_raw(uint16_t type, uint8_t cmd,
+                       const uint8_t *payload, uint8_t payload_len)
+{
+  if (payload_len > 62) {
+    return;
+  }
+  relay_send_packet(type, cmd, payload, payload_len);
 }
 
 // ---------------------------------------------------------------------------

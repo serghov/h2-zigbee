@@ -21,6 +21,11 @@ typedef void (*h2_relay_rx_callback_t)(uint16_t cmd_id, uint8_t data_type,
 // Initialize relay hardware + start UART RX
 void h2_relay_init(void);
 
+// Send an arbitrary frame to the wall module (diagnostics). The driver adds the sync byte,
+// sequence number, length, header checksum and CRC. payload_len <= 62.
+void h2_relay_send_raw(uint16_t type, uint8_t cmd,
+                       const uint8_t *payload, uint8_t payload_len);
+
 // Set relay state for a gang (0-indexed)
 void h2_relay_set(uint8_t gang, h2_relay_state_t state);
 

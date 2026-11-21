@@ -17,6 +17,7 @@
 #include "btl_interface.h"
 #include "slot-manager.h"
 #include "h2_relay.h"
+#include "h2_tap.h"
 #include "h2_button.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -26,7 +27,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000072  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000073  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -424,6 +425,7 @@ static void button_tick_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
   h2_relay_process_rx();
+  h2_tap_tick();
   h2_button_tick();
 
   // Detect both buttons held for factory reset

@@ -8,6 +8,7 @@
 
 #if H2_HAS_RELAY || H2_HAS_DIMMER
 #include "h2_relay.h"
+#include "h2_tap.h"
 #endif
 #if H2_HAS_DIMMER
 #include "h2_encoder.h"
@@ -468,6 +469,45 @@ static void handle_write_attributes(uint8_t endpoint, uint16_t source_node,
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostic tap attributes (0xFFF1 mode, 0xFFF2 inject). One attribute per write.
+// ---------------------------------------------------------------------------
+
+static bool handle_tap_write(uint8_t endpoint, uint16_t source_node, uint8_t seq_no,
+                             const uint8_t *payload, uint16_t payload_len)
+{
+  if (payload_len < 4) return false;
+  uint16_t attr_id  = payload[0] | ((uint16_t)payload[1] << 8);
+  uint8_t data_type = payload[2];
+  if (attr_id != H2_TAP_ATTR_MODE && attr_id != H2_TAP_ATTR_INJECT) return false;
+
+  uint8_t status = ZCL_STATUS_INVALID_VALUE;
+  if (attr_id == H2_TAP_ATTR_MODE) {
+    if (data_type == ZCL_INT8U_ATTRIBUTE_TYPE && payload[3] <= H2_TAP_MODE_NO_POLLS) {
+      h2_tap_set_mode(payload[3]);
+      status = ZCL_STATUS_SUCCESS;
+    }
+  } else {
+    // Octet string: [len][type_hi][type_lo][cmd][payload...]
+    uint8_t len = payload[3];
+    if (data_type == ZCL_OCTET_STRING_ATTRIBUTE_TYPE && len >= 3 && len <= 65
+        && (uint16_t)(4 + len) <= payload_len) {
+      uint16_t type = ((uint16_t)payload[4] << 8) | payload[5];
+      h2_relay_send_raw(type, payload[6], &payload[7], (uint8_t)(len - 3));
+      status = ZCL_STATUS_SUCCESS;
+    }
+  }
+
+  write_resp_header(seq_no, ZCL_CMD_WRITE_ATTR_RESPONSE);
+  appResponseData[appResponseLength++] = status;
+  if (status != ZCL_STATUS_SUCCESS) {
+    appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
+    appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
+  }
+  send_unicast(endpoint, source_node);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -531,6 +571,9 @@ bool h2_opple_handle_message(uint8_t endpoint,
       return true;
 
     case ZCL_CMD_WRITE_ATTRIBUTES:
+      if (handle_tap_write(endpoint, source_node, seq_no, payload, payload_len)) {
+        return true;
+      }
       handle_write_attributes(endpoint, source_node, seq_no, gang,
                               payload, payload_len);
       return true;
