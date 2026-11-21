@@ -23,6 +23,10 @@
 // sequence number, length, header checksum and CRC, and sends it to the wall module.
 #define H2_TAP_ATTR_INJECT  0xFFF2
 
+// Write, uint8, only accepted while the tap is enabled: fault injection for testing the
+// watchdog and the crash fallback. 1 = hang in a loop until the watchdog resets the device.
+#define H2_TAP_ATTR_FAULT   0xFFF3
+
 #define H2_TAP_MODE_OFF        0
 #define H2_TAP_MODE_ALL        1
 // Everything except the periodic measurement reads and their replies

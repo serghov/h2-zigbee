@@ -19,6 +19,7 @@ add_executable(h2_switch
     "../../common/h2_opple.c"
     "../../common/h2_power.c"
     "../../common/h2_relay.c"
+    "../../common/h2_safe.c"
     "../../common/h2_tap.c"
     "../../common/h2_temperature.c"
 )

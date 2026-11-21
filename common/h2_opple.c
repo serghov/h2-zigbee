@@ -478,7 +478,18 @@ static bool handle_tap_write(uint8_t endpoint, uint16_t source_node, uint8_t seq
   if (payload_len < 4) return false;
   uint16_t attr_id  = payload[0] | ((uint16_t)payload[1] << 8);
   uint8_t data_type = payload[2];
-  if (attr_id != H2_TAP_ATTR_MODE && attr_id != H2_TAP_ATTR_INJECT) return false;
+  if (attr_id != H2_TAP_ATTR_MODE && attr_id != H2_TAP_ATTR_INJECT
+      && attr_id != H2_TAP_ATTR_FAULT) return false;
+
+  if (attr_id == H2_TAP_ATTR_FAULT) {
+    if (data_type == ZCL_INT8U_ATTRIBUTE_TYPE && payload[3] == 1
+        && h2_tap_get_mode() != H2_TAP_MODE_OFF) {
+      for (;;) {
+        // Deliberate hang: only the watchdog gets us out.
+      }
+    }
+    return false;   // falls through to the normal handler, which reports unsupported
+  }
 
   uint8_t status = ZCL_STATUS_INVALID_VALUE;
   if (attr_id == H2_TAP_ATTR_MODE) {

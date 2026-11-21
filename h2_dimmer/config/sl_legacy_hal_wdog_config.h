@@ -37,7 +37,7 @@
 
 // <e SL_LEGACY_HAL_DISABLE_WATCHDOG> Disable calling halInternalEnableWatchDog in base-replacement.c's halInit().
 // <i> Default: 0
-#define SL_LEGACY_HAL_DISABLE_WATCHDOG 1
+#define SL_LEGACY_HAL_DISABLE_WATCHDOG 0
 // </e>
 
 // <o SL_LEGACY_HAL_WDOGn> WDOG to use for SL_LEGACY_HAL_WDOGn.
@@ -65,7 +65,7 @@
 // <wdogPeriod_64k=> wdogPeriod_64k / 65537 clock periods
 // <wdogPeriod_128k=> wdogPeriod_128k / 131073 clock periods
 // <wdogPeriod_256k=> wdogPeriod_256k / 262145 clock periods
-#define SL_LEGACY_HAL_WDOG_PERIOD wdogPeriod_64k
+#define SL_LEGACY_HAL_WDOG_PERIOD wdogPeriod_256k
 
 // <o SL_LEGACY_HAL_WDOG_WARNING> Warning for SL_LEGACY_HAL_WDOG timeout.
 // <i> Default: wdogWarnTime75pct

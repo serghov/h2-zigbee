@@ -18,6 +18,7 @@
 #include "slot-manager.h"
 #include "h2_relay.h"
 #include "h2_tap.h"
+#include "h2_safe.h"
 #include "h2_encoder.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -27,7 +28,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000027  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000029  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -766,6 +767,8 @@ sl_zigbee_af_status_t sl_zigbee_af_pre_attribute_change_cb(
     uint8_t size,
     uint8_t *value)
 {
+  if (h2_safe_mode_active()) return SL_ZIGBEE_ZCL_STATUS_SUCCESS;
+
   (void)mask; (void)manufacturerCode; (void)type; (void)size; (void)value;
 
   if ((clusterId == ZCL_ON_OFF_CLUSTER_ID && attributeId == ZCL_ON_OFF_ATTRIBUTE_ID)
@@ -793,6 +796,8 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
                                             uint8_t size,
                                             uint8_t *value)
 {
+  if (h2_safe_mode_active()) return;
+
   (void)manufacturerCode; (void)type; (void)size;
 
   if (endpoint != DIMMER_ENDPOINT || mask != CLUSTER_MASK_SERVER) return;
@@ -842,6 +847,8 @@ bool sl_zigbee_af_report_attributes_cb(sl_zigbee_af_cluster_id_t clusterId,
                                         uint8_t *buffer,
                                         uint16_t bufLen)
 {
+  if (h2_safe_mode_active()) return false;
+
   if (clusterId != ZCL_ON_OFF_CLUSTER_ID || bufLen < 4) return false;
 
   uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
@@ -876,6 +883,8 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
                                                uint8_t *buffer,
                                                uint16_t bufLen)
 {
+  if (h2_safe_mode_active()) return false;
+
   if (clusterId != ZCL_ON_OFF_CLUSTER_ID || bufLen < 5) return false;
 
   uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
@@ -922,6 +931,8 @@ static void light_sync_handler(sl_zigbee_af_event_t *event)
 
 bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
 {
+  if (h2_safe_mode_active()) return false;
+
   // Handle Opple cluster (0xFCC0)
   if (msg->apsFrame->clusterId == OPPLE_CLUSTER_ID) {
     return h2_opple_handle_message(msg->apsFrame->destinationEndpoint,
@@ -1018,6 +1029,8 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
 
 bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
 {
+  if (h2_safe_mode_active()) return false;
+
   if (cmd->apsFrame->clusterId != ZCL_LEVEL_CONTROL_CLUSTER_ID
       || cmd->apsFrame->destinationEndpoint != DIMMER_ENDPOINT
       || cmd->type != SL_ZIGBEE_INCOMING_UNICAST
@@ -1046,8 +1059,19 @@ bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
 
 void sl_zigbee_af_main_init_cb(void)
 {
-  // Erase storage slot 0 so stale OTA images don't get re-applied
+  bool safe_mode = h2_safe_boot(H2_FIRMWARE_VERSION);
+
+  // Erase storage slot 0 so stale OTA images don't get re-applied.
+  // This takes about a second; keep the watchdog fed around it.
+  halResetWatchdog();
   bootloader_eraseStorageSlot(0);
+  halResetWatchdog();
+
+  h2_safe_start();
+  if (safe_mode) {
+    // Crash fallback: Zigbee stack and OTA client only. See h2_safe.h.
+    return;
+  }
 
   // Initialize relay UART + power RX callback
   h2_relay_init();
@@ -1096,6 +1120,14 @@ void sl_zigbee_af_main_init_cb(void)
 
 void sl_zigbee_af_stack_status_cb(sl_status_t status)
 {
+  if (h2_safe_mode_active()) {
+    // Safe mode: keep only what OTA needs.
+    if (status == SL_STATUS_NETWORK_UP) {
+      sl_zigbee_af_ota_client_start_cb();
+    }
+    return;
+  }
+
   if (status == SL_STATUS_NETWORK_UP) {
     sl_zigbee_app_debug_println("Network UP");
     joined = true;
@@ -1120,6 +1152,8 @@ void sl_zigbee_af_network_steering_complete_cb(sl_status_t status,
                                                uint8_t joinAttempts,
                                                uint8_t finalState)
 {
+  if (h2_safe_mode_active()) return;
+
   (void)totalBeacons; (void)joinAttempts; (void)finalState;
   sl_zigbee_app_debug_println("Join network complete: 0x%02X", status);
 
@@ -1133,6 +1167,8 @@ void sl_zigbee_af_network_steering_complete_cb(sl_status_t status,
 
 void sl_zigbee_af_find_and_bind_initiator_complete_cb(sl_status_t status)
 {
+  if (h2_safe_mode_active()) return;
+
   sl_zigbee_app_debug_println("Find and bind initiator complete: 0x%02X", status);
   commissioning = false;
 }

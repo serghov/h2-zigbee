@@ -18,6 +18,7 @@
 #include "slot-manager.h"
 #include "h2_relay.h"
 #include "h2_tap.h"
+#include "h2_safe.h"
 #include "h2_button.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -27,7 +28,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000073  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000074  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -518,6 +519,8 @@ sl_zigbee_af_status_t sl_zigbee_af_pre_attribute_change_cb(
     uint8_t size,
     uint8_t *value)
 {
+  if (h2_safe_mode_active()) return SL_ZIGBEE_ZCL_STATUS_SUCCESS;
+
   (void)mask;
   (void)manufacturerCode;
   (void)type;
@@ -549,6 +552,8 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
                                             uint8_t size,
                                             uint8_t *value)
 {
+  if (h2_safe_mode_active()) return;
+
   (void)manufacturerCode;
   (void)type;
   (void)size;
@@ -582,6 +587,8 @@ bool sl_zigbee_af_report_attributes_cb(sl_zigbee_af_cluster_id_t clusterId,
                                         uint8_t *buffer,
                                         uint16_t bufLen)
 {
+  if (h2_safe_mode_active()) return false;
+
   if (bufLen < 4) {
     return false;
   }
@@ -642,6 +649,8 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
                                                uint8_t *buffer,
                                                uint16_t bufLen)
 {
+  if (h2_safe_mode_active()) return false;
+
   if (bufLen < 5) {
     return false;
   }
@@ -722,8 +731,19 @@ static void light_sync_handler(sl_zigbee_af_event_t *event)
 
 void sl_zigbee_af_main_init_cb(void)
 {
-  // Erase storage slot 0 so stale OTA images don't get re-applied on boot
+  bool safe_mode = h2_safe_boot(H2_FIRMWARE_VERSION);
+
+  // Erase storage slot 0 so stale OTA images don't get re-applied on boot.
+  // This takes about a second; keep the watchdog fed around it.
+  halResetWatchdog();
   bootloader_eraseStorageSlot(0);
+  halResetWatchdog();
+
+  h2_safe_start();
+  if (safe_mode) {
+    // Crash fallback: Zigbee stack and OTA client only. See h2_safe.h.
+    return;
+  }
 
   // Initialize relay UART + power RX callback (needed for gang detection)
   h2_relay_init();
@@ -785,6 +805,14 @@ void sl_zigbee_af_main_init_cb(void)
 
 void sl_zigbee_af_stack_status_cb(sl_status_t status)
 {
+  if (h2_safe_mode_active()) {
+    // Safe mode: keep only what OTA needs.
+    if (status == SL_STATUS_NETWORK_UP) {
+      sl_zigbee_af_ota_client_start_cb();
+    }
+    return;
+  }
+
   if (status == SL_STATUS_NETWORK_UP) {
     sl_zigbee_app_debug_println("Network UP");
     // Start OTA client immediately (no random delay)
@@ -804,6 +832,8 @@ void sl_zigbee_af_network_steering_complete_cb(sl_status_t status,
                                                uint8_t joinAttempts,
                                                uint8_t finalState)
 {
+  if (h2_safe_mode_active()) return;
+
   (void)totalBeacons;
   (void)joinAttempts;
   (void)finalState;
@@ -820,6 +850,8 @@ void sl_zigbee_af_network_steering_complete_cb(sl_status_t status,
 
 void sl_zigbee_af_find_and_bind_initiator_complete_cb(sl_status_t status)
 {
+  if (h2_safe_mode_active()) return;
+
   sl_zigbee_app_debug_println("Find and bind initiator complete: 0x%02X", status);
   commissioning = false;
 }
@@ -836,6 +868,8 @@ void sl_zigbee_af_radio_needs_calibrating_cb(void)
 
 bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
 {
+  if (h2_safe_mode_active()) return false;
+
   // Handle Opple cluster (0xFCC0)
   if (msg->apsFrame->clusterId == OPPLE_CLUSTER_ID) {
     return h2_opple_handle_message(msg->apsFrame->destinationEndpoint,
