@@ -1,7 +1,8 @@
 """Upload a compiled rule program through ZHA (runs inside the Home Assistant container).
 usage: rules_zha.py <ieee> info | erase | load <file.bpf>
 Needs the h2-zigbee quirk (attributes rules_control/rules_data/rules_info/rules_fault)."""
-import asyncio, aiohttp, json, sys, time
+import asyncio, aiohttp, json, os, sys, time
+# HA_URL / HA_TOKEN in the environment select another Home Assistant than the local one.
 CL, MFG = 0xFCC0, 0x115F
 CONTROL, DATA, INFO, FAULT = 0xFFC0, 0xFFC1, 0xFFC2, 0xFFC3
 RESULTS = {0: 'ok', 1: 'nothing to commit', 2: 'incomplete', 3: 'refused by the verifier', 4: 'storage error', 5: 'checksum mismatch'}
@@ -16,8 +17,9 @@ def crc16(data):
 
 async def main():
     ieee, mode = sys.argv[1], sys.argv[2]
-    tok = open('/config/tools/token').read().strip()
-    async with aiohttp.ClientSession() as s, s.ws_connect('http://127.0.0.1:8123/api/websocket') as ws:
+    tok = os.environ.get('HA_TOKEN') or open('/config/tools/token').read().strip()
+    url = os.environ.get('HA_URL', 'http://127.0.0.1:8123')
+    async with aiohttp.ClientSession() as s, s.ws_connect(url + '/api/websocket') as ws:
         await ws.receive_json(); await ws.send_json({'type': 'auth', 'access_token': tok}); await ws.receive_json()
         n = 0
         async def call(msg):
