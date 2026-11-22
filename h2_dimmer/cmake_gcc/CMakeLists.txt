@@ -19,6 +19,8 @@ add_executable(h2_dimmer
     "../../common/h2_encoder.c"
     "../../common/h2_led.c"
     "../../common/h2_led_ep.c"
+    "../../common/h2_bpf.c"
+    "../../common/h2_rules.c"
     "../../common/h2_opple.c"
     "../../common/h2_power.c"
     "../../common/h2_relay.c"

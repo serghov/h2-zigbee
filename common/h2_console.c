@@ -14,6 +14,10 @@
 #include "sl_cli.h"
 #include "sl_sleeptimer.h"
 #include "btl_interface.h"
+#include "h2_variant.h"
+#if H2_HAS_RULES
+#include "h2_rules.h"
+#endif
 
 #define CON_TX_PORT   gpioPortB
 #define CON_TX_PIN    0
@@ -198,7 +202,74 @@ static const sl_cli_command_info_t cmd_h2pin_info =
                  "port" SL_CLI_UNIT_SEPARATOR "pin" SL_CLI_UNIT_SEPARATOR "mode",
                  { SL_CLI_ARG_UINT8, SL_CLI_ARG_UINT8, SL_CLI_ARG_UINT8, SL_CLI_ARG_END, });
 
+#if H2_HAS_RULES
+// Rule program upload and test commands:
+//   h2rb <bytes>      begin an upload
+//   h2rd {hex}        append data
+//   h2rc              verify, store and activate
+//   h2rx              erase the stored program
+//   h2ri              print state
+//   h2ev <source> <type> <value>   inject an event
+static void cmd_h2rb(sl_cli_command_arg_t *arguments)
+{
+  bool ok = h2_rules_upload_begin(sl_cli_get_argument_uint16(arguments, 0));
+  sl_zigbee_app_debug_println("h2rb %s", ok ? "ok" : "refused");
+}
+static void cmd_h2rd(sl_cli_command_arg_t *arguments)
+{
+  size_t len = 0;
+  uint8_t *data = sl_cli_get_argument_hex(arguments, 0, &len);
+  bool ok = h2_rules_upload_data(data, (uint16_t)len);
+  sl_zigbee_app_debug_println("h2rd %s %d", ok ? "ok" : "refused", (int)len);
+}
+static void cmd_h2rc(sl_cli_command_arg_t *arguments)
+{
+  (void)arguments;
+  uint32_t detail = 0;
+  uint8_t result = h2_rules_upload_commit(&detail);
+  sl_zigbee_app_debug_println("h2rc result %d detail %lu", result, (unsigned long)detail);
+}
+static void cmd_h2rx(sl_cli_command_arg_t *arguments)
+{
+  (void)arguments;
+  h2_rules_erase();
+}
+static void cmd_h2ri(sl_cli_command_arg_t *arguments)
+{
+  (void)arguments;
+  h2_rules_print_info();
+}
+static void cmd_h2ev(sl_cli_command_arg_t *arguments)
+{
+  bool handled = h2_rules_event(sl_cli_get_argument_uint8(arguments, 0),
+                                sl_cli_get_argument_uint8(arguments, 1),
+                                sl_cli_get_argument_int32(arguments, 2));
+  sl_zigbee_app_debug_println("h2ev handled=%d", handled);
+}
+static const sl_cli_command_info_t cmd_h2rb_info =
+  SL_CLI_COMMAND(cmd_h2rb, "Begin a rule program upload", "bytes", { SL_CLI_ARG_UINT16, SL_CLI_ARG_END, });
+static const sl_cli_command_info_t cmd_h2rd_info =
+  SL_CLI_COMMAND(cmd_h2rd, "Append rule program data", "hex", { SL_CLI_ARG_HEX, SL_CLI_ARG_END, });
+static const sl_cli_command_info_t cmd_h2rc_info =
+  SL_CLI_COMMAND(cmd_h2rc, "Verify, store and activate the uploaded rule program", "", { SL_CLI_ARG_END, });
+static const sl_cli_command_info_t cmd_h2rx_info =
+  SL_CLI_COMMAND(cmd_h2rx, "Erase the rule program", "", { SL_CLI_ARG_END, });
+static const sl_cli_command_info_t cmd_h2ri_info =
+  SL_CLI_COMMAND(cmd_h2ri, "Rule engine state", "", { SL_CLI_ARG_END, });
+static const sl_cli_command_info_t cmd_h2ev_info =
+  SL_CLI_COMMAND(cmd_h2ev, "Inject a rule event", "source" SL_CLI_UNIT_SEPARATOR "type" SL_CLI_UNIT_SEPARATOR "value",
+                 { SL_CLI_ARG_UINT8, SL_CLI_ARG_UINT8, SL_CLI_ARG_INT32, SL_CLI_ARG_END, });
+#endif
+
 static const sl_cli_command_entry_t h2_command_table[] = {
+#if H2_HAS_RULES
+  { "h2rb", &cmd_h2rb_info, false },
+  { "h2rd", &cmd_h2rd_info, false },
+  { "h2rc", &cmd_h2rc_info, false },
+  { "h2rx", &cmd_h2rx_info, false },
+  { "h2ri", &cmd_h2ri_info, false },
+  { "h2ev", &cmd_h2ev_info, false },
+#endif
   { "h2pin", &cmd_h2pin_info, false },
   { "h2load", &cmd_h2load_info, false },
   { NULL, NULL, false },

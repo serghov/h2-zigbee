@@ -213,6 +213,7 @@ void h2_encoder_tick(void)
       btn_pressed = raw;
       btn_changed = true;
       debounce_count = 0;
+      if (cb) cb(raw ? H2_ENC_ACTION_BTN_DOWN : H2_ENC_ACTION_BTN_UP, 0, H2_ENC_MODE_BRIGHTNESS);
     }
   }
 

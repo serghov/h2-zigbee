@@ -15,6 +15,8 @@ typedef enum {
   H2_ENC_ACTION_LONG_HOLD,    // 5s hold (commissioning)
   H2_ENC_ACTION_RELEASE,      // release from long hold
   H2_ENC_ACTION_DOUBLE,       // second press released (color temp session end)
+  H2_ENC_ACTION_BTN_DOWN,     // raw debounced press, before any gesture is decided
+  H2_ENC_ACTION_BTN_UP,       // raw debounced release
 } h2_encoder_action_t;
 
 typedef void (*h2_encoder_callback_t)(h2_encoder_action_t action,

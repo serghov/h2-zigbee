@@ -8,4 +8,7 @@
 // 1 if the Zigbee configuration has an LED light endpoint per indicator LED (h2_led_ep.h)
 #define H2_HAS_LED_ENDPOINTS   1
 
+// 1 if the variant hooks up the rule engine (h2_rules.h)
+#define H2_HAS_RULES            1
+
 #endif // H2_VARIANT_H

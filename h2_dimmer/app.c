@@ -22,6 +22,7 @@
 #include "h2_console.h"
 #include "h2_scenes.h"
 #include "h2_led_ep.h"
+#include "h2_rules.h"
 #include "h2_encoder.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -31,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000044  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000045  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -582,19 +583,71 @@ static void stop_rotation(void)
   rotation_accum_time_ms = 0;
 }
 
+//--------------------------------------------------
+// Rule engine host functions (h2_rules.h)
+
+void h2_rules_host_relay_set(uint8_t gang, uint8_t mode)
+{
+  (void)gang;
+  if (mode == 2) {
+    h2_relay_toggle(0);
+  } else {
+    h2_relay_set(0, mode ? H2_RELAY_ON : H2_RELAY_OFF);
+  }
+  sync_relay_to_cluster();
+}
+
+bool h2_rules_host_relay_get(uint8_t gang)
+{
+  (void)gang;
+  return h2_relay_get(0) == H2_RELAY_ON;
+}
+
+void h2_rules_host_level_set(uint8_t gang, uint8_t level)
+{
+  (void)gang;
+  if (h2_relay_get(0) == H2_RELAY_OFF) {
+    h2_relay_set(0, H2_RELAY_ON);
+    sync_relay_to_cluster();
+  }
+  lc_start_transition(clamp_to_brightness_range(level), 200);
+}
+
+uint8_t h2_rules_host_source_endpoint(void)
+{
+  return CONTROL_ENDPOINT;
+}
+
 static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
                                h2_encoder_mode_t mode)
 {
+  // Raw press and release exist only as rule events.
+  if (action == H2_ENC_ACTION_BTN_DOWN || action == H2_ENC_ACTION_BTN_UP) {
+    if (joined) {
+      (void)h2_rules_event(H2_RULES_SRC_BUTTON0, action == H2_ENC_ACTION_BTN_DOWN
+                           ? H2_RULES_EV_PRESS : H2_RULES_EV_RELEASE, 0);
+    }
+    return;
+  }
+
   sl_zigbee_app_debug_println("ENC: action=%d delta=%d mode=%d", action, delta, mode);
 
   bool coupled = (h2_opple_get_op_mode(0) == OPPLE_OP_MODE_CONTROL_RELAY);
 
   switch (action) {
+    case H2_ENC_ACTION_BTN_DOWN:
+    case H2_ENC_ACTION_BTN_UP:
+      break;
+
     case H2_ENC_ACTION_ROTATE:
       // Any rotation cancels factory reset (must hold still for 15s)
       if (factory_reset_active) {
         factory_reset_active = false;
         h2_opple_init_leds();
+      }
+      if (joined && h2_rules_event(H2_RULES_SRC_KNOB, mode == H2_ENC_MODE_BRIGHTNESS
+                                   ? H2_RULES_EV_ROTATE : H2_RULES_EV_ROTATE_PRESSED, delta)) {
+        break;      // a rule took the rotation
       }
       if (coupled) {
         if (mode == H2_ENC_MODE_BRIGHTNESS) {
@@ -607,6 +660,10 @@ static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
       break;
 
     case H2_ENC_ACTION_TOGGLE:
+      if (joined && h2_rules_event(H2_RULES_SRC_BUTTON0, H2_RULES_EV_SINGLE, 0)) {
+        h2_opple_report_action(DIMMER_ENDPOINT, 1);
+        break;      // a rule took the click
+      }
       // Direct scene recall takes over the press when slot 0 is configured. With slot 1
       // configured as well, presses alternate between the two scenes.
       if (joined && h2_scenes_enabled(0)) {
@@ -646,6 +703,8 @@ static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
       break;
 
     case H2_ENC_ACTION_LONG_HOLD:
+      // Rules are told, but commissioning and the factory-reset warning always run.
+      if (joined) (void)h2_rules_event(H2_RULES_SRC_BUTTON0, H2_RULES_EV_HOLD, 0);
       if (!joined) {
         sl_zigbee_af_event_set_active(&commissioning_event);
       } else {
@@ -659,6 +718,7 @@ static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
       break;
 
     case H2_ENC_ACTION_RELEASE:
+      if (joined) (void)h2_rules_event(H2_RULES_SRC_BUTTON0, H2_RULES_EV_HOLD_RELEASE, 0);
       if (factory_reset_active) {
         factory_reset_active = false;
         h2_opple_init_leds();  // restore LED
@@ -667,6 +727,10 @@ static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
       break;
 
     case H2_ENC_ACTION_DOUBLE:
+      if (joined && h2_rules_event(H2_RULES_SRC_BUTTON0, H2_RULES_EV_DOUBLE, 0)) {
+        h2_opple_report_action(DIMMER_ENDPOINT, 2);
+        break;      // a rule took the double click
+      }
       if (!coupled && joined) {
         stop_rotation();
         h2_opple_report_action(DIMMER_ENDPOINT, 2);  // double
@@ -1117,6 +1181,7 @@ void sl_zigbee_af_main_init_cb(void)
   h2_opple_init();
   h2_scenes_init();
   h2_led_ep_init();
+  h2_rules_init(safe_mode);
   h2_temperature_init();
 
   // Set encoder sensitivity from stored config
