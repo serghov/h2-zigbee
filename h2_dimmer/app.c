@@ -32,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000048  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000004A  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -203,6 +203,10 @@ extern uint8_t appResponseData[];
 // Model identifier: external attribute storage
 
 static const uint8_t model_id[] = "\x12" "lumi.switch.agl011";
+// Manufacturer name. Not "Aqara": Zigbee2MQTT identifies the device by the model alone,
+// while ZHA picks its quirk by manufacturer and model, so a name of our own keeps ZHA's
+// quirk for the stock firmware away from this firmware.
+static const uint8_t manufacturer_name[] = "\x09" "h2-zigbee";
 
 sl_zigbee_af_status_t sl_zigbee_af_external_attribute_read_cb(
     uint8_t endpoint,
@@ -219,6 +223,15 @@ sl_zigbee_af_status_t sl_zigbee_af_external_attribute_read_cb(
       return SL_ZIGBEE_ZCL_STATUS_INSUFFICIENT_SPACE;
     }
     memcpy(buffer, model_id, total);
+    return SL_ZIGBEE_ZCL_STATUS_SUCCESS;
+  }
+  if (clusterId == ZCL_BASIC_CLUSTER_ID
+      && attributeMetadata->attributeId == ZCL_MANUFACTURER_NAME_ATTRIBUTE_ID) {
+    uint8_t total = 1 + manufacturer_name[0];
+    if (total > maxReadLength) {
+      return SL_ZIGBEE_ZCL_STATUS_INSUFFICIENT_SPACE;
+    }
+    memcpy(buffer, manufacturer_name, total);
     return SL_ZIGBEE_ZCL_STATUS_SUCCESS;
   }
   return SL_ZIGBEE_ZCL_STATUS_FAILURE;
@@ -1029,7 +1042,12 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
     return true;
   }
 
-  if (h2_safe_mode_active()) return false;
+  if (h2_safe_mode_active()) {
+    // The rule program stays reachable so a faulty one can be erased or replaced.
+    return msg->apsFrame->clusterId == OPPLE_CLUSTER_ID
+           && h2_opple_handle_safe_message(msg->apsFrame->destinationEndpoint, msg->source,
+                                           msg->message, msg->msgLen);
+  }
 
   // Handle Opple cluster (0xFCC0)
   if (msg->apsFrame->clusterId == OPPLE_CLUSTER_ID) {
@@ -1174,6 +1192,8 @@ void sl_zigbee_af_main_init_cb(void)
   h2_safe_start();
   if (safe_mode) {
     // Crash fallback: Zigbee stack and OTA client only. See h2_safe.h.
+    // The rule engine is initialised stopped, so the program can be erased or replaced.
+    h2_rules_init(true);
     return;
   }
 

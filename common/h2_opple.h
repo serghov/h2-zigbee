@@ -43,6 +43,10 @@ void h2_opple_init(void);
 
 // Handle an incoming ZCL message on cluster 0xFCC0.
 // Returns true if message was consumed, false to pass to framework.
+// Safe-mode subset: rule program attributes only (see h2_rules.h).
+bool h2_opple_handle_safe_message(uint8_t endpoint, uint16_t source_node,
+                                  uint8_t *msg, uint16_t msg_len);
+
 bool h2_opple_handle_message(uint8_t endpoint,
                              uint16_t source_node,
                              uint8_t *message,

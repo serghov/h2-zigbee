@@ -268,6 +268,10 @@ static void handle_read_attributes(uint8_t endpoint, uint16_t source_node,
     uint16_t attr_id = payload[off] | ((uint16_t)payload[off + 1] << 8);
     off += 2;
 
+    // Largest record is 2 (id) + 1 (status) + 1 (type) + 4 (value). Attributes that do
+    // not fit in the response are left out; the reader asks for them again.
+    if (appResponseLength + 8 > SL_ZIGBEE_AF_RESPONSE_BUFFER_LEN) break;
+
     appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
     appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
 
@@ -491,6 +495,7 @@ static void handle_write_attributes(uint8_t endpoint, uint16_t source_node,
 
     if (status != ZCL_STATUS_SUCCESS) {
       all_ok = false;
+      if ((size_t)err_len + 3 > sizeof(err_buf)) continue;   // more failures than the reply holds
       err_buf[err_len++] = status;
       err_buf[err_len++] = (uint8_t)(attr_id & 0xFF);
       err_buf[err_len++] = (uint8_t)(attr_id >> 8);
@@ -649,6 +654,50 @@ void h2_opple_init_leds(void)
   for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     update_gang_leds(g);
   }
+}
+
+// Safe mode: the normal handler is off (its modules are not initialised), but the rule
+// program must stay reachable so a faulty one can be erased or replaced over the air.
+// Only the rule attributes are served.
+bool h2_opple_handle_safe_message(uint8_t endpoint, uint16_t source_node,
+                                  uint8_t *msg, uint16_t msg_len)
+{
+#if !H2_HAS_RULES
+  (void)endpoint; (void)source_node; (void)msg; (void)msg_len;
+  return false;
+#else
+  if (endpoint != 1 || msg_len < 5) return false;
+  if ((msg[0] & 0x03) != 0x00 || !(msg[0] & ZCL_FC_MFG_SPECIFIC)) return false;
+  if ((msg[1] | ((uint16_t)msg[2] << 8)) != AQARA_MFG_CODE) return false;
+
+  uint8_t seq_no = msg[3];
+  const uint8_t *payload = &msg[5];
+  uint16_t payload_len = msg_len - 5;
+
+  if (msg[4] == ZCL_CMD_WRITE_ATTRIBUTES) {
+    return handle_rules_write(endpoint, source_node, seq_no, payload, payload_len);
+  }
+  if (msg[4] != ZCL_CMD_READ_ATTRIBUTES) return false;
+
+  write_resp_header(seq_no, ZCL_CMD_READ_ATTR_RESPONSE);
+  for (uint16_t off = 0; off + 2 <= payload_len; off += 2) {
+    uint16_t attr_id = payload[off] | ((uint16_t)payload[off + 1] << 8);
+    uint32_t value;
+    if (appResponseLength + 8 > SL_ZIGBEE_AF_RESPONSE_BUFFER_LEN) break;
+    appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
+    appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
+    if (h2_rules_attr_get(attr_id, &value)) {
+      appResponseData[appResponseLength++] = ZCL_STATUS_SUCCESS;
+      appResponseData[appResponseLength++] = ZCL_INT32U_ATTRIBUTE_TYPE;
+      memcpy(&appResponseData[appResponseLength], &value, 4);
+      appResponseLength += 4;
+    } else {
+      appResponseData[appResponseLength++] = ZCL_STATUS_UNSUPPORTED_ATTRIBUTE;
+    }
+  }
+  send_unicast(endpoint, source_node);
+  return true;
+#endif
 }
 
 bool h2_opple_handle_message(uint8_t endpoint,

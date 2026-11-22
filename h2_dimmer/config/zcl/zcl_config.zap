@@ -105,6 +105,22 @@
               "reportableChange": 0
             },
             {
+              "name": "manufacturer name",
+              "code": 4,
+              "mfgCode": null,
+              "side": "server",
+              "type": "char_string",
+              "included": 1,
+              "storageOption": "External",
+              "singleton": 1,
+              "bounded": null,
+              "defaultValue": "0",
+              "reportable": 0,
+              "minInterval": 1,
+              "maxInterval": 65534,
+              "reportableChange": 0
+            },
+            {
               "name": "model identifier",
               "code": 5,
               "mfgCode": null,
@@ -1300,6 +1316,22 @@
               "reportableChange": 0
             },
             {
+              "name": "manufacturer name",
+              "code": 4,
+              "mfgCode": null,
+              "side": "server",
+              "type": "char_string",
+              "included": 1,
+              "storageOption": "External",
+              "singleton": 1,
+              "bounded": null,
+              "defaultValue": "0",
+              "reportable": 0,
+              "minInterval": 1,
+              "maxInterval": 65534,
+              "reportableChange": 0
+            },
+            {
               "name": "model identifier",
               "code": 5,
               "mfgCode": null,
@@ -1874,6 +1906,22 @@
               "singleton": 1,
               "bounded": null,
               "defaultValue": "8",
+              "reportable": 0,
+              "minInterval": 1,
+              "maxInterval": 65534,
+              "reportableChange": 0
+            },
+            {
+              "name": "manufacturer name",
+              "code": 4,
+              "mfgCode": null,
+              "side": "server",
+              "type": "char_string",
+              "included": 1,
+              "storageOption": "External",
+              "singleton": 1,
+              "bounded": null,
+              "defaultValue": "0",
               "reportable": 0,
               "minInterval": 1,
               "maxInterval": 65534,

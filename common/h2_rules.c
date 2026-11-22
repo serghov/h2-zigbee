@@ -15,6 +15,7 @@
 
 #define BUDGET_INSTRUCTIONS   4000         // per event
 #define BUDGET_MESSAGES       8            // radio messages per event
+#define BUDGET_ACTIONS        16     // relay, level, LED, log and gesture calls per event
 #define TIMER_MIN_MS          50
 #define ZCL_PAYLOAD_MAX       64
 #define BOOT_EVENT_DELAY_MS   500
@@ -47,6 +48,7 @@ static sl_zigbee_af_event_t boot_event;
 static h2_bpf_vm_t vm;
 static bool running;
 static uint8_t messages_left;
+static uint8_t actions_left;
 static uint32_t stat_events, stat_handled, stat_faults;
 static bool safe;                 // safe mode: programs can be uploaded but do not run
 static uint8_t upload_result;     // result of the last commit
@@ -111,6 +113,13 @@ static long send_zcl(bool group, uint16_t dest, uint8_t dest_endpoint, uint16_t 
 
 static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *ok)
 {
+  // Host functions that drive hardware or print are limited per event, like radio
+  // messages: an event must stay short however the program loops, or it would starve
+  // the watchdog.
+  if (id == 1 || id == 3 || id == 6 || id == 7 || id == 12 || id == 13) {
+    if (actions_left == 0) return (uint64_t)-1;
+    actions_left--;
+  }
   switch (id) {
     case 1:   // relay_set(gang, mode)
       if (a[0] >= H2_SWITCH_GANG_COUNT || a[1] > 2) return (uint64_t)-1;
@@ -211,6 +220,7 @@ bool h2_rules_event(uint8_t source, uint8_t type, int32_t value)
 
   running = true;
   messages_left = BUDGET_MESSAGES;
+  actions_left = BUDGET_ACTIONS;
   uint64_t result = 0;
   h2_bpf_status_t status = h2_bpf_run(&vm, (uint64_t)(uintptr_t)&ev, &result);
   running = false;
@@ -384,6 +394,7 @@ void h2_rules_init(bool safe_mode)
 
   if (safe_mode) {
     safe = true;
+    load_stored();     // so the stored program can be inspected; it does not run
     sl_zigbee_app_debug_println("Rules: off (safe mode)");
     return;
   }
