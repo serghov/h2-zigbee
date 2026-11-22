@@ -6,7 +6,7 @@
 //   lower button   bulb only: warm light, and on the next click off
 //
 //   upper LED      purple while the room light and the bulb are both on
-//   lower LED      red while the bulb is in warm light
+//   lower LED      purple while the bulb is in warm light
 //
 // The bulb is switched with commands that skip its fade: IKEA bulbs fade on the plain
 // On and Off commands whatever their transition setting says.
@@ -60,12 +60,20 @@ static inline void bulb_colour(long mireds)
   zcl_group(GROUP, 0x0300, 0x0A, p, 4);
 }
 
-// led_set(led, red, blue), each 0..255.
+// led_set(led, red, blue), each 0..255. Both LEDs use the same colour; which one is lit
+// tells the mode.
+#define MODE_RED   255
+#define MODE_BLUE  255                // red + blue = purple
+
+static inline void show_mode(long led, long on)
+{
+  led_set(led, on ? MODE_RED : 0, on ? MODE_BLUE : 0);
+}
+
 static inline void show_modes(void)
 {
-  long both = relay_get(0) && var_get(VAR_BULB);
-  led_set(LED_UPPER, both ? 255 : 0, both ? 255 : 0);       // purple or dark
-  led_set(LED_LOWER, var_get(VAR_WARM) ? 255 : 0, 0);       // red or dark
+  show_mode(LED_UPPER, relay_get(0) && var_get(VAR_BULB));
+  show_mode(LED_LOWER, var_get(VAR_WARM));
 }
 
 int on_event(struct h2_event *ev)
