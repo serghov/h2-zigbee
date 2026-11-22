@@ -56,7 +56,7 @@ component:
 - {id: zigbee_on_off}
 - {id: zigbee_ota_client}
 - {id: zigbee_ota_storage_simple}
-- {id: zigbee_pro_stack}
+- {id: zigbee_pro_leaf_stack}
 - {id: zigbee_end_device_support}
 - {id: zigbee_reporting}
 - {id: zigbee_scan_dispatch}
