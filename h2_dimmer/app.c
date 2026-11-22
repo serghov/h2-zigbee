@@ -29,7 +29,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x0000002E  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000030  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -1063,6 +1063,35 @@ bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
 }
 
 //--------------------------------------------------
+// EXPERIMENT (sleepy end device): get onto the network in the right role without anyone
+// touching the knob. If still joined as a router from an earlier build, leave; if not
+// joined, start joining. Bench only.
+
+static sl_zigbee_af_event_t role_fix_event;
+
+static void role_fix_handler(sl_zigbee_af_event_t *event)
+{
+  sl_zigbee_network_status_t state = sl_zigbee_af_network_state();
+  sl_zigbee_node_type_t type = SL_ZIGBEE_UNKNOWN_DEVICE;
+  sl_status_t type_status = sl_zigbee_af_get_node_type(&type);
+  sl_zigbee_app_debug_println("role fix: state=%d node type=%d (status 0x%02X)", state, type, type_status);
+  if (state == SL_ZIGBEE_JOINED_NETWORK
+      && sl_zigbee_af_get_node_type(&type) == SL_STATUS_OK
+      && type == SL_ZIGBEE_SLEEPY_END_DEVICE) {
+    return;   // done
+  }
+  if (state == SL_ZIGBEE_JOINED_NETWORK_NO_PARENT) {
+    // An end device that lost its parent rejoins by itself; leaving here would throw the
+    // network away after every reboot.
+  } else if (state == SL_ZIGBEE_JOINED_NETWORK) {
+    sl_zigbee_leave_network(SL_ZIGBEE_LEAVE_NWK_WITH_NO_OPTION);   // still a router: leave
+  } else if (state == SL_ZIGBEE_NO_NETWORK) {
+    sl_zigbee_af_network_steering_start();
+  }
+  sl_zigbee_af_event_set_delay_ms(event, 20000);
+}
+
+//--------------------------------------------------
 // Zigbee framework callbacks
 
 void sl_zigbee_af_main_init_cb(void)
@@ -1122,6 +1151,9 @@ void sl_zigbee_af_main_init_cb(void)
 
   // Reduce APS ACK timeout
   sl_zigbee_set_aps_ack_timeout_ms(500);
+
+  sl_zigbee_af_event_init(&role_fix_event, role_fix_handler);
+  sl_zigbee_af_event_set_delay_ms(&role_fix_event, 5000);
 
   // Start periodic ticks
   sl_zigbee_af_event_set_delay_ms(&encoder_tick_event, ENCODER_TICK_MS);
