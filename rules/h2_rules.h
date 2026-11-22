@@ -5,6 +5,13 @@
 // program handled the event (the firmware then skips its built-in behaviour for it), or 0
 // to let the firmware do what it normally does.
 //
+// On the 2- and 4-button switch the firmware acts on a button the moment it goes down
+// (relay or bound lights), before any click is known. To take a button over, return 1 for
+// its PRESS event; the firmware then stays out of that whole gesture and only the program
+// acts on SINGLE, DOUBLE, HOLD and HOLD_RELEASE. Buttons there are numbered
+// gang * 2 + side (0 = up, 1 = down); a double click always follows a single click, and
+// triple clicks and max_clicks() do not apply. See examples/switch_demo.c.
+//
 // Restrictions of the firmware's interpreter: no global variables, no string literals,
 // no function calls other than the host functions below and static inline functions.
 // Keep state with var_get()/var_set().

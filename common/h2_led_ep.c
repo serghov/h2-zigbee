@@ -36,12 +36,15 @@ static bool restoring;
 static sl_zigbee_af_event_t save_event;
 static sl_zigbee_af_event_t restore_event;
 
+extern uint8_t h2_active_gang_count;
+
+// LEDs that exist on this plate: one per gang, or two (up and down) on the switch.
 uint8_t h2_led_ep_count(void)
 {
 #if H2_LED_HAS_DN
-  return (uint8_t)(H2_SWITCH_GANG_COUNT * 2);
+  return (uint8_t)(h2_active_gang_count * 2);
 #else
-  return (uint8_t)H2_SWITCH_GANG_COUNT;
+  return h2_active_gang_count;
 #endif
 }
 

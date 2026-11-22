@@ -1,6 +1,7 @@
-"""ZHA quirk for the h2-zigbee custom firmware on the Aqara Dimmer Switch H2 EU.
+"""ZHA quirk for the h2-zigbee custom firmware on the Aqara H2 EU dimmer and switches.
 
-The firmware reports manufacturer "h2-zigbee" and the stock model "lumi.switch.agl011",
+The firmware reports manufacturer "h2-zigbee" and the stock model (dimmer
+"lumi.switch.agl011", switch "lumi.switch.agl009" / "lumi.switch.agl010"),
 so ZHA's own quirk for the stock firmware (manufacturer "Aqara") does not apply.
 Copy this file into the directory named by `zha: custom_quirks_path:`.
 """
@@ -57,8 +58,17 @@ class H2Cluster(XiaomiAqaraE1Cluster):
 
 
 (
+    # Dimmer
     QuirkBuilder("h2-zigbee", "lumi.switch.agl011")
     .replaces_endpoint(1, device_type=zha.DeviceType.DIMMABLE_LIGHT)
+    .replaces(H2Cluster)
+    .add_to_registry()
+)
+
+(
+    # Switch, one gang (2 buttons) and two gangs (4 buttons). Not yet tried on hardware.
+    QuirkBuilder("h2-zigbee", "lumi.switch.agl009")
+    .applies_to("h2-zigbee", "lumi.switch.agl010")
     .replaces(H2Cluster)
     .add_to_registry()
 )

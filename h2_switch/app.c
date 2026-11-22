@@ -21,6 +21,8 @@
 #include "h2_safe.h"
 #include "h2_console.h"
 #include "h2_scenes.h"
+#include "h2_led_ep.h"
+#include "h2_rules.h"
 #include "h2_button.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -30,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000079  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000007A  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -372,11 +374,76 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
 //--------------------------------------------------
 // Button callback (called from h2_button state machine via tick)
 
+//--------------------------------------------------
+// Rule engine host functions (h2_rules.h)
+
+void h2_rules_host_relay_set(uint8_t gang, uint8_t mode)
+{
+  if (gang >= h2_active_gang_count) return;
+  if (mode == 2) {
+    h2_relay_toggle(gang);
+  } else {
+    h2_relay_set(gang, mode ? H2_RELAY_ON : H2_RELAY_OFF);
+  }
+  sync_relay_to_cluster(gang);
+}
+
+bool h2_rules_host_relay_get(uint8_t gang)
+{
+  return gang < h2_active_gang_count && h2_relay_get(gang) == H2_RELAY_ON;
+}
+
+void h2_rules_host_level_set(uint8_t gang, uint8_t level)
+{
+  (void)gang; (void)level;       // no dimmer on this variant
+}
+
+void h2_rules_host_max_clicks(uint8_t button, uint8_t clicks, bool wait)
+{
+  // The button module always reports a click at once and a double click on top of it.
+  (void)button; (void)clicks; (void)wait;
+}
+
+uint8_t h2_rules_host_source_endpoint(void)
+{
+  return gangs[0].endpoint;
+}
+
+// Buttons a rule program has taken over: bit n = button n (gang * 2 + side). A program
+// takes a button by returning 1 for its PRESS event; the built-in behaviour (relay,
+// bindings, action report) then stays off for the whole gesture.
+static uint8_t rule_owned_buttons;
+
+static bool rules_button_event(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
+{
+  static const uint8_t type_map[] = {
+    [H2_BTN_ACTION_RELEASE] = H2_RULES_EV_HOLD_RELEASE,
+    [H2_BTN_ACTION_SINGLE]  = H2_RULES_EV_SINGLE,
+    [H2_BTN_ACTION_DOUBLE]  = H2_RULES_EV_DOUBLE,
+    [H2_BTN_ACTION_LONG]    = H2_RULES_EV_HOLD,
+    [H2_BTN_ACTION_PRESS]   = H2_RULES_EV_PRESS,
+  };
+  uint8_t button = (uint8_t)(gang * 2 + (side == H2_BTN_SIDE_DOWN ? 1 : 0));
+  uint8_t bit = (uint8_t)(1u << button);
+  if (sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
+    rule_owned_buttons &= (uint8_t)~bit;       // joining and reset gestures stay with the firmware
+    return false;
+  }
+  bool handled = h2_rules_event((uint8_t)(H2_RULES_SRC_BUTTON0 + button), type_map[action], 0);
+  if (action == H2_BTN_ACTION_PRESS) {
+    if (handled) rule_owned_buttons |= bit;
+    else         rule_owned_buttons &= (uint8_t)~bit;
+  }
+  return (rule_owned_buttons & bit) != 0;
+}
+
 static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
 {
   if (gang >= h2_active_gang_count) return;
 
   sl_zigbee_app_debug_println("Button: gang=%d side=%d action=%d", gang, side, action);
+
+  if (rules_button_event(gang, side, action)) return;
 
   // PRESS: low-latency immediate action for both modes
   if (action == H2_BTN_ACTION_PRESS) {
@@ -555,6 +622,8 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
                                             uint8_t *value)
 {
   if (h2_safe_mode_active()) return;
+
+  h2_led_ep_attribute_changed(endpoint, clusterId);   // LED light endpoints
 
   (void)manufacturerCode;
   (void)type;
@@ -746,6 +815,8 @@ void sl_zigbee_af_main_init_cb(void)
   h2_safe_start();
   if (safe_mode) {
     // Crash fallback: Zigbee stack and OTA client only. See h2_safe.h.
+    // The rule engine is initialised stopped, so the program can be erased or replaced.
+    h2_rules_init(true);
     return;
   }
 
@@ -783,6 +854,12 @@ void sl_zigbee_af_main_init_cb(void)
   h2_led_init();
   h2_opple_init();
   h2_scenes_init();
+  // LED light endpoints exist for two gangs; a one-gang plate has only the first two LEDs.
+  for (uint8_t ep = (uint8_t)(H2_LED_EP_FIRST + h2_led_ep_count()); ep < H2_LED_EP_FIRST + 4; ep++) {
+    sl_zigbee_af_endpoint_enable_disable(ep, false);
+  }
+  h2_led_ep_init();
+  h2_rules_init(false);
   h2_temperature_init();
 
   // Send init handshake to relay module (status + relay state queries)
@@ -869,6 +946,14 @@ void sl_zigbee_af_radio_needs_calibrating_cb(void)
 #endif
 
 //--------------------------------------------------
+// Pre-command-received: commands for the LED light endpoints
+
+bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
+{
+  if (h2_safe_mode_active()) return false;
+  return h2_led_ep_command(cmd);
+}
+
 // Pre-message-received: intercept messages before framework processing
 
 bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
@@ -880,7 +965,12 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
     return true;
   }
 
-  if (h2_safe_mode_active()) return false;
+  if (h2_safe_mode_active()) {
+    // The rule program stays reachable so a faulty one can be erased or replaced.
+    return msg->apsFrame->clusterId == OPPLE_CLUSTER_ID
+           && h2_opple_handle_safe_message(msg->apsFrame->destinationEndpoint, msg->source,
+                                           msg->message, msg->msgLen);
+  }
 
   // Handle Opple cluster (0xFCC0)
   if (msg->apsFrame->clusterId == OPPLE_CLUSTER_ID) {
