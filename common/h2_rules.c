@@ -48,6 +48,9 @@ static h2_bpf_vm_t vm;
 static bool running;
 static uint8_t messages_left;
 static uint32_t stat_events, stat_handled, stat_faults;
+static bool safe;                 // safe mode: programs can be uploaded but do not run
+static uint8_t upload_result;     // result of the last commit
+static uint16_t upload_detail;
 static uint8_t last_fault;
 static uint32_t last_fault_pc;
 
@@ -298,13 +301,31 @@ bool h2_rules_upload_begin(uint16_t length)
 
 bool h2_rules_upload_data(const uint8_t *data, uint16_t length)
 {
-  if (staging_len == 0 || length > staging_len - staging_got) return false;
-  memcpy(staging + staging_got, data, length);
-  staging_got = (uint16_t)(staging_got + length);
+  return h2_rules_upload_data_at(staging_got, data, length);
+}
+
+bool h2_rules_upload_data_at(uint16_t offset, const uint8_t *data, uint16_t length)
+{
+  // Data arrives in order. A repeat of bytes already received (a retried radio message)
+  // is accepted and rewrites the same bytes; a gap is refused.
+  if (staging_len == 0 || offset > staging_got || length > staging_len - offset) return false;
+  memcpy(staging + offset, data, length);
+  if ((uint16_t)(offset + length) > staging_got) staging_got = (uint16_t)(offset + length);
   return true;
 }
 
+static uint8_t commit(uint32_t *detail);
+
 uint8_t h2_rules_upload_commit(uint32_t *detail)
+{
+  uint32_t d = 0;
+  upload_result = commit(&d);
+  upload_detail = (uint16_t)d;
+  if (detail) *detail = d;
+  return upload_result;
+}
+
+static uint8_t commit(uint32_t *detail)
 {
   uint32_t bad_pc = 0;
   if (detail) *detail = 0;
@@ -338,9 +359,11 @@ uint8_t h2_rules_upload_commit(uint32_t *detail)
   memcpy(code, staging, staging_len);
   code_len = staging_len;
   staging_len = 0;
-  active = true;
   sl_zigbee_app_debug_println("Rules: installed %d bytes", code_len);
-  sl_zigbee_af_event_set_delay_ms(&boot_event, 100);
+  if (!safe) {
+    active = true;
+    sl_zigbee_af_event_set_delay_ms(&boot_event, 100);
+  }
   return 0;
 }
 
@@ -360,6 +383,7 @@ void h2_rules_init(bool safe_mode)
   sl_zigbee_af_event_init(&boot_event, boot_handler);
 
   if (safe_mode) {
+    safe = true;
     sl_zigbee_app_debug_println("Rules: off (safe mode)");
     return;
   }
@@ -368,4 +392,73 @@ void h2_rules_init(bool safe_mode)
     sl_zigbee_af_event_set_delay_ms(&boot_event, BOOT_EVENT_DELAY_MS);
     sl_zigbee_app_debug_println("Rules: loaded %d bytes", code_len);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Access over Zigbee (attributes on the Opple cluster, see h2_rules.h)
+// ---------------------------------------------------------------------------
+
+bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value)
+{
+  switch (attr_id) {
+    case H2_RULES_ATTR_CONTROL: {
+      uint32_t flags = (active ? 1u : 0u) | (staging_len ? 2u : 0u) | (safe ? 4u : 0u);
+      *value = (flags << 24) | ((uint32_t)upload_result << 16)
+             | (staging_len ? staging_got : upload_detail);
+      return true;
+    }
+    case H2_RULES_ATTR_INFO:
+      *value = code_len ? (((uint32_t)crc16(code, code_len) << 16) | code_len) : 0;
+      return true;
+    case H2_RULES_ATTR_FAULT:
+      *value = ((uint32_t)last_fault << 24) | ((stat_faults > 255 ? 255u : stat_faults) << 16)
+             | (last_fault_pc & 0xFFFF);
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool h2_rules_attr_write(uint16_t attr_id, uint8_t zcl_type, const uint8_t *data,
+                         uint16_t length, bool *ok)
+{
+  *ok = false;
+  if (attr_id == H2_RULES_ATTR_INFO || attr_id == H2_RULES_ATTR_FAULT) return true;   // read only
+
+  if (attr_id == H2_RULES_ATTR_CONTROL) {
+    if (zcl_type != 0x23 || length < 4) return true;               // uint32
+    uint16_t arg = (uint16_t)(data[0] | ((uint16_t)data[1] << 8));
+    switch (data[3]) {
+      case H2_RULES_OP_BEGIN:
+        *ok = h2_rules_upload_begin(arg);
+        break;
+      case H2_RULES_OP_COMMIT:
+        if (staging_len != 0 && staging_got == staging_len
+            && crc16(staging, staging_len) != arg) {
+          staging_len = 0;
+          upload_result = 5;
+          upload_detail = 0;
+        } else {
+          *ok = (h2_rules_upload_commit(NULL) == 0);
+        }
+        break;
+      case H2_RULES_OP_ERASE:
+        staging_len = 0;
+        h2_rules_erase();
+        *ok = true;
+        break;
+      default:
+        break;
+    }
+    return true;
+  }
+
+  if (attr_id == H2_RULES_ATTR_DATA) {
+    // Octet string: [string length][offset lo][offset hi][bytes...]
+    if (zcl_type != 0x41 || length < 1 || data[0] < 3 || (uint16_t)(1 + data[0]) > length) return true;
+    uint16_t offset = (uint16_t)(data[1] | ((uint16_t)data[2] << 8));
+    *ok = h2_rules_upload_data_at(offset, &data[3], (uint16_t)(data[0] - 2));
+    return true;
+  }
+  return false;
 }

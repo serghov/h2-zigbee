@@ -14,6 +14,7 @@
 #if H2_HAS_LED_ENDPOINTS
 #include "h2_led_ep.h"
 #endif
+#include "h2_rules.h"
 #include "h2_build.h"
 #endif
 #if H2_HAS_DIMMER
@@ -236,6 +237,9 @@ static bool ext_attr_get(uint16_t attr_id, uint32_t *value)
   if (h2_scenes_attr_get(attr_id, value)) return true;
 #if H2_HAS_LED_ENDPOINTS
   if (h2_led_ep_attr_get(attr_id, value)) return true;
+#endif
+#if H2_HAS_RULES
+  if (h2_rules_attr_get(attr_id, value)) return true;
 #endif
   return false;
 }
@@ -538,6 +542,31 @@ static bool handle_scene_write(uint8_t endpoint, uint16_t source_node, uint8_t s
   return true;
 }
 
+// Rule program upload (h2_rules.h). One attribute per write.
+static bool handle_rules_write(uint8_t endpoint, uint16_t source_node, uint8_t seq_no,
+                               const uint8_t *payload, uint16_t payload_len)
+{
+#if !H2_HAS_RULES
+  (void)endpoint; (void)source_node; (void)seq_no; (void)payload; (void)payload_len;
+  return false;
+#else
+  if (payload_len < 3) return false;
+  uint16_t attr_id = payload[0] | ((uint16_t)payload[1] << 8);
+  bool ok = false;
+  if (!h2_rules_attr_write(attr_id, payload[2], &payload[3], (uint16_t)(payload_len - 3), &ok)) {
+    return false;
+  }
+  write_resp_header(seq_no, ZCL_CMD_WRITE_ATTR_RESPONSE);
+  appResponseData[appResponseLength++] = ok ? ZCL_STATUS_SUCCESS : ZCL_STATUS_INVALID_VALUE;
+  if (!ok) {
+    appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
+    appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
+  }
+  send_unicast(endpoint, source_node);
+  return true;
+#endif
+}
+
 static bool handle_tap_write(uint8_t endpoint, uint16_t source_node, uint8_t seq_no,
                              const uint8_t *payload, uint16_t payload_len)
 {
@@ -653,6 +682,9 @@ bool h2_opple_handle_message(uint8_t endpoint,
       return true;
 
     case ZCL_CMD_WRITE_ATTRIBUTES:
+      if (handle_rules_write(endpoint, source_node, seq_no, payload, payload_len)) {
+        return true;
+      }
       if (handle_scene_write(endpoint, source_node, seq_no, payload, payload_len)) {
         return true;
       }

@@ -59,6 +59,7 @@ bool h2_rules_active(void);
 // 3 verification failed, 4 storage failed); *detail gets the failing instruction index.
 bool h2_rules_upload_begin(uint16_t length);
 bool h2_rules_upload_data(const uint8_t *data, uint16_t length);
+bool h2_rules_upload_data_at(uint16_t offset, const uint8_t *data, uint16_t length);
 uint8_t h2_rules_upload_commit(uint32_t *detail);
 
 // Remove the stored program.
@@ -66,6 +67,39 @@ void h2_rules_erase(void);
 
 // Print state on the debug console.
 void h2_rules_print_info(void);
+
+// Access over Zigbee: manufacturer-specific attributes on the Opple cluster (0xFCC0).
+//
+//   CONTROL  uint32, write: (operation << 24) | argument
+//              BEGIN   argument = program length in bytes
+//              COMMIT  argument = CRC16 of the whole program (CRC-16/MODBUS);
+//                      verifies, stores and activates. The write fails if the program
+//                      is refused; read CONTROL for the reason.
+//              ERASE   remove the stored program
+//            read: (flags << 24) | (result of the last commit << 16) | value
+//              flags   bit 0 a program is running, bit 1 an upload is in progress,
+//                      bit 2 safe mode (programs are stored but do not run)
+//              result  0 ok, 1 nothing to commit, 2 incomplete, 3 refused by the verifier,
+//                      4 storage error, 5 checksum mismatch
+//              value   bytes received so far while an upload is in progress, otherwise
+//                      the instruction the verifier refused
+//   DATA     octet string, write only: [offset lo][offset hi][program bytes...].
+//            Chunks are sent in order; repeating a chunk is harmless.
+//   INFO     uint32, read: (CRC16 of the installed program << 16) | its length; 0 = none
+//   FAULT    uint32, read: (last fault code << 24) | (fault count << 16) | instruction
+#define H2_RULES_ATTR_CONTROL   0xFFC0
+#define H2_RULES_ATTR_DATA      0xFFC1
+#define H2_RULES_ATTR_INFO      0xFFC2
+#define H2_RULES_ATTR_FAULT     0xFFC3
+#define H2_RULES_OP_BEGIN       1
+#define H2_RULES_OP_COMMIT      2
+#define H2_RULES_OP_ERASE       3
+
+bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value);
+// Returns false when the attribute is not one of the above; otherwise *ok says whether
+// the write was accepted.
+bool h2_rules_attr_write(uint16_t attr_id, uint8_t zcl_type, const uint8_t *data,
+                         uint16_t length, bool *ok);
 
 // ---- provided by the variant ------------------------------------------------------------
 // mode: 0 off, 1 on, 2 toggle.
