@@ -87,9 +87,10 @@ static uint32_t pin_since_tick;
 bool h2_tap_pin_drive(uint32_t value)
 {
   uint8_t port = (uint8_t)(value >> 16), pin = (uint8_t)(value >> 8), mode = (uint8_t)value;
-  // Port A 0-3, 5, 6: wall module reset, debug port, wall UART. Port B 2-5: buttons/knob.
-  bool reserved = (port == 0 && (pin <= 3 || pin == 5 || pin == 6))
-                  || (port == 1 && pin >= 2 && pin <= 5);
+  // Port A 0, 5, 6, 7 and port B 0, 1 are the six signal pins of the wall connector
+  // (measured on the dimmer bench); PA1-PA3 are the debug port; PB2-PB5 buttons or knob.
+  bool reserved = (port == 0 && (pin <= 3 || (pin >= 5 && pin <= 7)))
+                  || (port == 1 && pin <= 5);
   if (port > 3 || pin > 9 || mode > 2 || reserved) {
     return false;
   }
