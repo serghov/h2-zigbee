@@ -599,7 +599,22 @@ static bool handle_tap_write(uint8_t endpoint, uint16_t source_node, uint8_t seq
   uint16_t attr_id  = payload[0] | ((uint16_t)payload[1] << 8);
   uint8_t data_type = payload[2];
   if (attr_id != H2_TAP_ATTR_MODE && attr_id != H2_TAP_ATTR_INJECT
-      && attr_id != H2_TAP_ATTR_FAULT) return false;
+      && attr_id != H2_TAP_ATTR_FAULT && attr_id != H2_TAP_ATTR_PIN) return false;
+
+  if (attr_id == H2_TAP_ATTR_PIN) {
+    bool ok = data_type == ZCL_INT32U_ATTRIBUTE_TYPE && payload_len >= 7
+              && h2_tap_get_mode() != H2_TAP_MODE_OFF
+              && h2_tap_pin_drive((uint32_t)payload[3] | ((uint32_t)payload[4] << 8)
+                                  | ((uint32_t)payload[5] << 16) | ((uint32_t)payload[6] << 24));
+    write_resp_header(seq_no, ZCL_CMD_WRITE_ATTR_RESPONSE);
+    appResponseData[appResponseLength++] = ok ? ZCL_STATUS_SUCCESS : ZCL_STATUS_INVALID_VALUE;
+    if (!ok) {
+      appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
+      appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
+    }
+    send_unicast(endpoint, source_node);
+    return true;
+  }
 
   if (attr_id == H2_TAP_ATTR_FAULT) {
     if (data_type == ZCL_INT8U_ATTRIBUTE_TYPE && payload[3] == 1

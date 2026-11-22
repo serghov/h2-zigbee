@@ -1,3 +1,4 @@
+#include "em_gpio.h"
 #include "h2_build.h"
 #include "h2_tap.h"
 
@@ -79,8 +80,42 @@ void h2_tap_record(uint8_t dir, const uint8_t *frame, uint16_t len)
   q_count++;
 }
 
+static bool pin_driven;
+static uint8_t pin_port, pin_number;
+static uint32_t pin_since_tick;
+
+bool h2_tap_pin_drive(uint32_t value)
+{
+  uint8_t port = (uint8_t)(value >> 16), pin = (uint8_t)(value >> 8), mode = (uint8_t)value;
+  // Port A 0-3, 5, 6: wall module reset, debug port, wall UART. Port B 2-5: buttons/knob.
+  bool reserved = (port == 0 && (pin <= 3 || pin == 5 || pin == 6))
+                  || (port == 1 && pin >= 2 && pin <= 5);
+  if (port > 3 || pin > 9 || mode > 2 || reserved) {
+    return false;
+  }
+  if (pin_driven) {
+    GPIO_PinModeSet((GPIO_Port_TypeDef)pin_port, pin_number, gpioModeDisabled, 0);
+    pin_driven = false;
+  }
+  if (mode == 0) {
+    GPIO_PinModeSet((GPIO_Port_TypeDef)port, pin, gpioModeDisabled, 0);
+  } else {
+    GPIO_PinModeSet((GPIO_Port_TypeDef)port, pin, gpioModePushPull, mode == 2 ? 1 : 0);
+    pin_driven = true;
+    pin_port = port;
+    pin_number = pin;
+    pin_since_tick = sl_sleeptimer_get_tick_count();
+  }
+  return true;
+}
+
 void h2_tap_tick(void)
 {
+  if (pin_driven
+      && sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count() - pin_since_tick) >= H2_TAP_PIN_HOLD_MS) {
+    GPIO_PinModeSet((GPIO_Port_TypeDef)pin_port, pin_number, gpioModeDisabled, 0);
+    pin_driven = false;
+  }
   if (q_count == 0) {
     return;
   }
@@ -132,5 +167,6 @@ void h2_tap_set_mode(uint8_t mode) { (void)mode; }
 uint8_t h2_tap_get_mode(void) { return H2_TAP_MODE_OFF; }
 void h2_tap_record(uint8_t dir, const uint8_t *frame, uint16_t len) { (void)dir; (void)frame; (void)len; }
 void h2_tap_tick(void) {}
+bool h2_tap_pin_drive(uint32_t value) { (void)value; return false; }
 
 #endif

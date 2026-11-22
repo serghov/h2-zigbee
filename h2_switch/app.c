@@ -32,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x0000007A  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000007B  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -247,6 +247,15 @@ static void sync_relay_to_cluster(uint8_t gang)
 static void power_on_handler(sl_zigbee_af_event_t *event)
 {
   sl_zigbee_af_event_set_inactive(event);
+  if (h2_active_gang_count < 2) {
+    // A one-gang plate has no second relay, button pair or LED pair: take their endpoints
+    // off the air so a hub does not show controls that do nothing. Done here and not in
+    // the init callback, where the framework has not set the endpoints up yet.
+    static const uint8_t second_gang_endpoints[] = { 2, 5, 12, H2_LED_EP_FIRST + 2, H2_LED_EP_FIRST + 3 };
+    for (uint8_t i = 0; i < sizeof(second_gang_endpoints); i++) {
+      sl_zigbee_af_endpoint_enable_disable(second_gang_endpoints[i], false);
+    }
+  }
   for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     h2_opple_apply_power_on_behavior(g);
     sync_relay_to_cluster(g);
@@ -854,10 +863,6 @@ void sl_zigbee_af_main_init_cb(void)
   h2_led_init();
   h2_opple_init();
   h2_scenes_init();
-  // LED light endpoints exist for two gangs; a one-gang plate has only the first two LEDs.
-  for (uint8_t ep = (uint8_t)(H2_LED_EP_FIRST + h2_led_ep_count()); ep < H2_LED_EP_FIRST + 4; ep++) {
-    sl_zigbee_af_endpoint_enable_disable(ep, false);
-  }
   h2_led_ep_init();
   h2_rules_init(false);
   h2_temperature_init();

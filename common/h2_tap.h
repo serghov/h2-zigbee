@@ -27,6 +27,15 @@
 // watchdog and the crash fallback. 1 = hang in a loop until the watchdog resets the device.
 #define H2_TAP_ATTR_FAULT   0xFFF3
 
+// Write, uint32, only accepted while the tap is enabled: drive one processor pin to find
+// out what it is wired to (for example a third LED colour). Value = (port << 16) |
+// (pin << 8) | mode; port 0-3 = A-D; mode 0 = released, 1 = low, 2 = high. A driven pin is
+// released by itself after H2_TAP_PIN_HOLD_MS. Pins of the debug port, the wall connector
+// and the buttons are refused.
+#define H2_TAP_ATTR_PIN     0xFFF5
+#define H2_TAP_PIN_HOLD_MS  4000
+bool h2_tap_pin_drive(uint32_t value);
+
 #define H2_TAP_MODE_OFF        0
 #define H2_TAP_MODE_ALL        1
 // Everything except the periodic measurement reads and their replies
