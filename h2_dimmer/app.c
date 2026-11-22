@@ -28,7 +28,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000029  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000002B  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -931,6 +931,13 @@ static void light_sync_handler(sl_zigbee_af_event_t *event)
 
 bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
 {
+  // Boot diagnostics are answered in every mode, including safe mode.
+  if (msg->apsFrame->clusterId == OPPLE_CLUSTER_ID
+      && h2_safe_handle_diag_read(msg->apsFrame->destinationEndpoint, msg->source,
+                                  msg->message, msg->msgLen)) {
+    return true;
+  }
+
   if (h2_safe_mode_active()) return false;
 
   // Handle Opple cluster (0xFCC0)

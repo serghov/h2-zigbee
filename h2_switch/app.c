@@ -28,7 +28,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000074  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000075  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -868,6 +868,13 @@ void sl_zigbee_af_radio_needs_calibrating_cb(void)
 
 bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
 {
+  // Boot diagnostics are answered in every mode, including safe mode.
+  if (msg->apsFrame->clusterId == OPPLE_CLUSTER_ID
+      && h2_safe_handle_diag_read(msg->apsFrame->destinationEndpoint, msg->source,
+                                  msg->message, msg->msgLen)) {
+    return true;
+  }
+
   if (h2_safe_mode_active()) return false;
 
   // Handle Opple cluster (0xFCC0)

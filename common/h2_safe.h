@@ -31,4 +31,21 @@ bool h2_safe_mode_active(void);
 // Number of consecutive unhealthy boots including this one (diagnostics).
 uint8_t h2_safe_fail_count(void);
 
+// Boot diagnostics, readable over Zigbee in normal AND safe mode: manufacturer-specific
+// attribute 0xFFF4 on the Opple cluster (0xFCC0), octet string:
+//   [0] 1 if this boot is in safe mode
+//   [1] consecutive unhealthy boots, including this one
+//   [2..] reset causes of the last H2_SAFE_RESET_HISTORY boots, newest first, two bytes
+//         each (low, high) as returned by halGetExtendedResetInfo(): high byte is the base
+//         cause, low byte the detail, as listed in the SDK's legacy_hal reset-def.h.
+//         Common values: 0x0401 power-on, 0x0501 watchdog expired, 0x0600/0x0601 software
+//         reset, 0x0201/0x0202 bootloader (for example after an OTA install), 0x0301 pin.
+#define H2_SAFE_ATTR_DIAG       0xFFF4
+#define H2_SAFE_RESET_HISTORY   6
+
+// Call at the top of sl_zigbee_af_pre_message_received_cb() for Opple-cluster messages,
+// before any safe-mode gate. Returns true if it answered a read of H2_SAFE_ATTR_DIAG.
+bool h2_safe_handle_diag_read(uint8_t endpoint, uint16_t source_node,
+                              const uint8_t *msg, uint16_t msg_len);
+
 #endif // H2_SAFE_H
