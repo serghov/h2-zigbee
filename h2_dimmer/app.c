@@ -29,7 +29,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000033  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000034  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -1067,6 +1067,9 @@ bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
 // touching the knob. If still joined as a router from an earlier build, leave; if not
 // joined, start joining. Bench only.
 
+// The role this experimental build should end up in; must match zigbee_device_config.h.
+#define H2_EXPERIMENT_NODE_TYPE SL_ZIGBEE_END_DEVICE
+
 static sl_zigbee_af_event_t role_fix_event;
 
 static void role_fix_handler(sl_zigbee_af_event_t *event)
@@ -1077,7 +1080,7 @@ static void role_fix_handler(sl_zigbee_af_event_t *event)
   sl_zigbee_app_debug_println("role fix: state=%d node type=%d (status 0x%02X)", state, type, type_status);
   if (state == SL_ZIGBEE_JOINED_NETWORK
       && sl_zigbee_af_get_node_type(&type) == SL_STATUS_OK
-      && type == SL_ZIGBEE_SLEEPY_END_DEVICE) {
+      && type == H2_EXPERIMENT_NODE_TYPE) {
     return;   // done
   }
   if (state == SL_ZIGBEE_JOINED_NETWORK_NO_PARENT) {
