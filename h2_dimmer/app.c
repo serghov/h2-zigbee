@@ -29,7 +29,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000030  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000031  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -1150,7 +1150,11 @@ void sl_zigbee_af_main_init_cb(void)
   sl_zigbee_af_event_set_active(&power_on_event);
 
   // Reduce APS ACK timeout
-  sl_zigbee_set_aps_ack_timeout_ms(500);
+  // EXPERIMENT (sleepy end device): keep the default APS acknowledgement timeout. A device
+  // that fetches acknowledgements by polling cannot meet 500 ms. Poll once a second when
+  // idle and every 250 ms while the stack expects data (acknowledgements, OTA blocks).
+  sl_zigbee_af_set_long_poll_interval_qs_cb(4);
+  sl_zigbee_af_set_short_poll_interval_ms_cb(250);
 
   sl_zigbee_af_event_init(&role_fix_event, role_fix_handler);
   sl_zigbee_af_event_set_delay_ms(&role_fix_event, 5000);
