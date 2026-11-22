@@ -20,6 +20,7 @@
 #include "h2_tap.h"
 #include "h2_safe.h"
 #include "h2_console.h"
+#include "h2_scenes.h"
 #include "h2_button.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -29,7 +30,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000078  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000079  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -781,6 +782,7 @@ void sl_zigbee_af_main_init_cb(void)
   h2_button_init(on_button_action);
   h2_led_init();
   h2_opple_init();
+  h2_scenes_init();
   h2_temperature_init();
 
   // Send init handshake to relay module (status + relay state queries)

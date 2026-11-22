@@ -20,6 +20,7 @@
 #include "h2_tap.h"
 #include "h2_safe.h"
 #include "h2_console.h"
+#include "h2_scenes.h"
 #include "h2_encoder.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -29,7 +30,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000032  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000040  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -605,6 +606,17 @@ static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
       break;
 
     case H2_ENC_ACTION_TOGGLE:
+      // Direct scene recall takes over the press when slot 0 is configured. With slot 1
+      // configured as well, presses alternate between the two scenes.
+      if (joined && h2_scenes_enabled(0)) {
+        static bool second;
+        uint8_t slot = (second && h2_scenes_enabled(1)) ? 1 : 0;
+        if (h2_scenes_recall(slot, CONTROL_ENDPOINT)) {
+          second = !second;
+          h2_opple_report_action(DIMMER_ENDPOINT, 1);
+          break;
+        }
+      }
       if (coupled) {
         handle_coupled_toggle();
         h2_opple_report_action(DIMMER_ENDPOINT, 1);
@@ -1094,6 +1106,7 @@ void sl_zigbee_af_main_init_cb(void)
   h2_encoder_init(on_encoder_action);
   h2_led_init();
   h2_opple_init();
+  h2_scenes_init();
   h2_temperature_init();
 
   // Set encoder sensitivity from stored config

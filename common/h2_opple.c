@@ -9,6 +9,7 @@
 #if H2_HAS_RELAY || H2_HAS_DIMMER
 #include "h2_relay.h"
 #include "h2_tap.h"
+#include "h2_scenes.h"
 #include "h2_build.h"
 #endif
 #if H2_HAS_DIMMER
@@ -239,6 +240,15 @@ static void handle_read_attributes(uint8_t endpoint, uint16_t source_node,
 
     appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
     appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
+
+    uint32_t scene_value;
+    if (h2_scenes_attr_get(attr_id, &scene_value)) {
+      appResponseData[appResponseLength++] = ZCL_STATUS_SUCCESS;
+      appResponseData[appResponseLength++] = ZCL_INT32U_ATTRIBUTE_TYPE;
+      memcpy(&appResponseData[appResponseLength], &scene_value, 4);
+      appResponseLength += 4;
+      continue;
+    }
 
     uint8_t zcl_type, attr_size;
     bool read_only;
@@ -473,6 +483,34 @@ static void handle_write_attributes(uint8_t endpoint, uint16_t source_node,
 // Diagnostic tap attributes (0xFFF1 mode, 0xFFF2 inject). One attribute per write.
 // ---------------------------------------------------------------------------
 
+// Scene-slot attributes (see h2_scenes.h): one uint32 attribute per write.
+static bool handle_scene_write(uint8_t endpoint, uint16_t source_node, uint8_t seq_no,
+                               const uint8_t *payload, uint16_t payload_len)
+{
+  if (payload_len < 3) return false;
+  uint16_t attr_id  = payload[0] | ((uint16_t)payload[1] << 8);
+  uint8_t data_type = payload[2];
+  uint32_t current;
+  if (!h2_scenes_attr_get(attr_id, &current)) return false;
+
+  uint8_t status = ZCL_STATUS_INVALID_VALUE;
+  if (data_type == ZCL_INT32U_ATTRIBUTE_TYPE && payload_len >= 7) {
+    uint32_t value = (uint32_t)payload[3] | ((uint32_t)payload[4] << 8)
+                   | ((uint32_t)payload[5] << 16) | ((uint32_t)payload[6] << 24);
+    h2_scenes_attr_set(attr_id, value);
+    status = ZCL_STATUS_SUCCESS;
+  }
+
+  write_resp_header(seq_no, ZCL_CMD_WRITE_ATTR_RESPONSE);
+  appResponseData[appResponseLength++] = status;
+  if (status != ZCL_STATUS_SUCCESS) {
+    appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
+    appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
+  }
+  send_unicast(endpoint, source_node);
+  return true;
+}
+
 static bool handle_tap_write(uint8_t endpoint, uint16_t source_node, uint8_t seq_no,
                              const uint8_t *payload, uint16_t payload_len)
 {
@@ -588,6 +626,9 @@ bool h2_opple_handle_message(uint8_t endpoint,
       return true;
 
     case ZCL_CMD_WRITE_ATTRIBUTES:
+      if (handle_scene_write(endpoint, source_node, seq_no, payload, payload_len)) {
+        return true;
+      }
       if (handle_tap_write(endpoint, source_node, seq_no, payload, payload_len)) {
         return true;
       }
