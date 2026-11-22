@@ -1,6 +1,7 @@
 #include "app/framework/include/af.h"
 #include "nvm3_default.h"
 #include "em_gpio.h"
+#include "network-steering.h"
 
 #include "h2_safe.h"
 #include "h2_led_config.h"
@@ -70,6 +71,12 @@ static void safe_tick_handler(sl_zigbee_af_event_t *event)
     }
   } else {
     GPIO_PinOutToggle(H2_LED_UP_R_PORT, H2_LED_UP_R_PIN);
+    // Without a network there is no OTA and no way out except a wired flash, so keep
+    // trying to join any open network. Normal mode leaves joining to the user.
+    if (ticks % (H2_SAFE_JOIN_RETRY_S * 1000 / SAFE_TICK_MS) == (2000 / SAFE_TICK_MS)
+        && sl_zigbee_af_network_state() == SL_ZIGBEE_NO_NETWORK) {
+      sl_zigbee_af_network_steering_start();
+    }
     if (seconds >= (uint32_t)H2_SAFE_EXIT_MIN * 60) {
       record.fails = 0;          // give normal mode another try
       save_record();
