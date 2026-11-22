@@ -1,7 +1,7 @@
 // Bedroom: a 2-button switch whose relay feeds three Zigbee ceiling bulbs. The relay must
-// stay on so the bulbs always have mains; the buttons only talk to the bulbs. These rules
-// never touch the relay: the buttons are taken over so the firmware does not switch it,
-// and the switch's power-on setting ("On") brings it up after a power cut.
+// stay on so the bulbs always have mains; the buttons only talk to the bulbs. The rules
+// switch the relay on once at start-up and never touch it otherwise; the buttons are
+// taken over so the firmware does not switch it on a press.
 //
 //   upper button   Day mode: full brightness, cool light. Again while in Day: off.
 //   lower button   Night mode: 60 %, warm light. Again while in Night: off.
@@ -76,6 +76,7 @@ static inline void show_mode(long mode)
 int on_event(struct h2_event *ev)
 {
   if (ev->type == H2_EV_BOOT) {
+    relay_set(0, H2_ON);              // the bulbs need mains
     show_mode(var_get(VAR_MODE));
     return 1;
   }
