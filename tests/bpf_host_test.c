@@ -30,6 +30,7 @@ static uint64_t helper(h2_bpf_vm_t *vm, uint32_t id, const uint64_t a[5], bool *
     case 9: if (a[0] < 16) vars[a[0]] = (long)a[1]; return 0;
     case 10: snprintf(b, sizeof b, "tstart(%ld,%ld) ", (long)a[0], (long)a[1]); break;
     case 11: snprintf(b, sizeof b, "tstop(%ld) ", (long)a[0]); break;
+    case 13: return 0;
     default: *ok = false; return 0;
   }
   strncat(calls, b, sizeof(calls) - strlen(calls) - 1);
@@ -132,11 +133,11 @@ int main(int argc, char **argv)
     h2_bpf_vm_t vm; uint64_t r; struct ev e;
     #define EV(s, t, v) e = (struct ev){ s, t, v, 0 }; CHECK(run(code, len, &e, &r, &vm) == H2_BPF_OK, "demo run failed pc %u", vm.fault_pc)
     relay = 0; memset(vars, 0, sizeof vars);
-    EV(0, 3, 0); CHECK(r == 1 && !strcmp(calls, "relay(0,2) scene(1,1) led(0,128,128) "), "single#1: %s", calls);
-    EV(0, 3, 0); CHECK(r == 1 && !strcmp(calls, "relay(0,2) scene(1,2) led(0,128,128) "), "single#2: %s", calls);
-    EV(0, 4, 0); CHECK(!strcmp(calls, "scene(1,2) "), "double#1: %s", calls);
-    EV(0, 4, 0); CHECK(!strcmp(calls, "scene(1,3) "), "double#2: %s", calls);
-    EV(0, 4, 0); CHECK(!strcmp(calls, "scene(1,1) "), "double#3: %s", calls);
+    EV(48, 10, 0); CHECK(r == 1, "boot");
+    EV(0, 3, 0); CHECK(r == 1 && !strcmp(calls, "relay(0,2) scene(1,1) "), "single#1: %s", calls);
+    EV(0, 3, 0); CHECK(r == 1 && !strcmp(calls, "relay(0,2) scene(1,2) "), "single#2: %s", calls);
+    EV(0, 4, 0); CHECK(!strcmp(calls, "relay(0,2) zcl(1,8,4,len3) led(0,255,0) "), "double#1: %s", calls);
+    EV(0, 4, 0); CHECK(!strcmp(calls, "relay(0,2) zcl(1,8,4,len3) led(0,0,255) "), "double#2: %s", calls);
     EV(0, 6, 0); CHECK(!strcmp(calls, "tstart(0,300) "), "hold: %s", calls);
     EV(32, 9, 0); CHECK(!strcmp(calls, "led(0,255,0) tstart(0,300) "), "timer#1: %s", calls);
     EV(32, 9, 0); CHECK(!strcmp(calls, "led(0,0,255) tstart(0,300) "), "timer#2: %s", calls);

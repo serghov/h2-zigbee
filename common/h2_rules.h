@@ -72,6 +72,8 @@ void h2_rules_print_info(void);
 void h2_rules_host_relay_set(uint8_t gang, uint8_t mode);
 bool h2_rules_host_relay_get(uint8_t gang);
 void h2_rules_host_level_set(uint8_t gang, uint8_t level);
+// Multi-click detection for a button: clicks 1-3; wait: see h2_encoder_set_max_clicks().
+void h2_rules_host_max_clicks(uint8_t button, uint8_t clicks, bool wait);
 // Endpoint that rule-generated Zigbee commands are sent from.
 uint8_t h2_rules_host_source_endpoint(void);
 

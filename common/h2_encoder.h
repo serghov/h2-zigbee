@@ -17,6 +17,7 @@ typedef enum {
   H2_ENC_ACTION_DOUBLE,       // second press released (color temp session end)
   H2_ENC_ACTION_BTN_DOWN,     // raw debounced press, before any gesture is decided
   H2_ENC_ACTION_BTN_UP,       // raw debounced release
+  H2_ENC_ACTION_TRIPLE,       // three clicks (multi-click mode only)
 } h2_encoder_action_t;
 
 typedef void (*h2_encoder_callback_t)(h2_encoder_action_t action,
@@ -31,6 +32,17 @@ void h2_encoder_tick(void);
 
 // Called from sl_button_on_change ISR for the encoder push button.
 void h2_encoder_on_button(bool pressed);
+
+// Multi-click detection. With 1 (the default) a click is reported the moment the button
+// is released and double clicks are never reported. With 2 or 3 there are two styles:
+//   wait = false  every click is reported at once: the first as a single, a second within
+//                 300 ms as a double, a third as a triple. No delay, but a double is
+//                 always preceded by a single.
+//   wait = true   clicks are counted and one result is reported 300 ms after the last
+//                 click (or at once when the maximum is reached). A double arrives alone,
+//                 but a single is delayed by 300 ms.
+// In both styles H2_ENC_ACTION_DOUBLE means two clicks.
+void h2_encoder_set_max_clicks(uint8_t clicks, bool wait);
 
 // Set rotation sensitivity (720=low, 360=medium, 180=high).
 void h2_encoder_set_sensitivity(uint16_t value);

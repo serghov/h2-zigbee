@@ -32,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000045  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000047  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -613,6 +613,11 @@ void h2_rules_host_level_set(uint8_t gang, uint8_t level)
   lc_start_transition(clamp_to_brightness_range(level), 200);
 }
 
+void h2_rules_host_max_clicks(uint8_t button, uint8_t clicks, bool wait)
+{
+  if (button == 0) h2_encoder_set_max_clicks(clicks, wait);
+}
+
 uint8_t h2_rules_host_source_endpoint(void)
 {
   return CONTROL_ENDPOINT;
@@ -637,6 +642,10 @@ static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
   switch (action) {
     case H2_ENC_ACTION_BTN_DOWN:
     case H2_ENC_ACTION_BTN_UP:
+      break;
+
+    case H2_ENC_ACTION_TRIPLE:
+      if (joined) (void)h2_rules_event(H2_RULES_SRC_BUTTON0, H2_RULES_EV_TRIPLE, 0);
       break;
 
     case H2_ENC_ACTION_ROTATE:

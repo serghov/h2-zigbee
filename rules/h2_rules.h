@@ -31,9 +31,9 @@ struct h2_event {
 
 #define H2_EV_PRESS         1         // went down
 #define H2_EV_RELEASE       2         // came up
-#define H2_EV_SINGLE        3         // one click (after the multi-click window, if enabled)
-#define H2_EV_DOUBLE        4
-#define H2_EV_TRIPLE        5
+#define H2_EV_SINGLE        3         // one click
+#define H2_EV_DOUBLE        4         // needs max_clicks(button, 2, ...) or more
+#define H2_EV_TRIPLE        5         // needs max_clicks(button, 3, ...)
 #define H2_EV_HOLD          6         // held past the hold threshold
 #define H2_EV_HOLD_RELEASE  7         // released after a hold
 #define H2_EV_ROTATE        8         // knob: value = steps, positive clockwise
@@ -60,6 +60,15 @@ H2_FN( 9, long, var_set,      long index, long value);
 H2_FN(10, long, timer_start,  long id, long milliseconds);            // H2_EV_TIMER later; restarts if running
 H2_FN(11, long, timer_stop,   long id);
 H2_FN(12, long, log_value,    long tag, long value);                  // debug print on the bench console
+// Multi-click detection for a button; call it on H2_EV_BOOT. clicks = 1 (default), 2 or 3.
+//   wait = H2_CLICKS_INSTANT  every click is reported at once: SINGLE, then DOUBLE for a
+//                             second click within 300 ms, then TRIPLE. Nothing is delayed,
+//                             but a DOUBLE always follows a SINGLE.
+//   wait = H2_CLICKS_WAIT     one event per gesture, 300 ms after the last click. A DOUBLE
+//                             arrives alone, but a SINGLE is delayed by 300 ms.
+#define H2_CLICKS_INSTANT  0
+#define H2_CLICKS_WAIT     1
+H2_FN(13, long, max_clicks,   long button, long clicks, long wait);
 
 int on_event(struct h2_event *ev);
 

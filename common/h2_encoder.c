@@ -39,6 +39,9 @@ static volatile int8_t step_accum;  // accumulated steps since last FSM tick
 static fsm_state_t fsm_state;
 static uint16_t fsm_timer;
 static bool had_rotation;
+static uint8_t max_clicks = 1;   // 1 = a click fires on release; 2-3 = wait for more clicks
+static uint8_t click_count;      // clicks collected so far in multi-click mode
+static bool click_wait;          // true: decide after the window; false: report each click at once
 static bool btn_pressed;   // debounced state, read by FSM
 static bool btn_changed;   // debounced edge flag, read by FSM
 
@@ -77,6 +80,25 @@ void h2_encoder_init(h2_encoder_callback_t callback)
   // Read initial state
   last_a = GPIO_PinInGet(ENC_A_PORT, ENC_A_PIN);
   last_b = GPIO_PinInGet(ENC_B_PORT, ENC_B_PIN);
+}
+
+void h2_encoder_set_max_clicks(uint8_t clicks, bool wait)
+{
+  max_clicks = (clicks < 1) ? 1 : (clicks > 3) ? 3 : clicks;
+  click_wait = wait;
+  click_count = 0;
+}
+
+static void fire_clicks(uint8_t count)
+{
+  static const h2_encoder_action_t action[] = {
+    H2_ENC_ACTION_TOGGLE, H2_ENC_ACTION_DOUBLE, H2_ENC_ACTION_TRIPLE
+  };
+  click_count = 0;
+  if (count >= 1 && count <= 3 && cb) {
+    cb(action[count - 1], 0, H2_ENC_MODE_BRIGHTNESS);
+    toggle_cooldown = TOGGLE_COOLDOWN_TICKS;
+  }
 }
 
 void h2_encoder_on_button(bool pressed)
@@ -151,33 +173,58 @@ static void fsm_tick(void)
         if (cb) cb(H2_ENC_ACTION_ROTATE, delta, H2_ENC_MODE_COLOR_TEMP);
       }
       if (!had_rotation && fsm_timer >= LONG_PRESS_MS) {
+        click_count = 0;
         if (cb) cb(H2_ENC_ACTION_LONG_HOLD, 0, H2_ENC_MODE_BRIGHTNESS);
         fsm_state = FSM_HELD;
       } else if (changed && !pressed) {
-        if (fsm_timer < PRESS_TAP_MAX_MS && !had_rotation) {
-          // Quick tap without intentional rotation — toggle immediately
-          if (cb) cb(H2_ENC_ACTION_TOGGLE, 0, H2_ENC_MODE_BRIGHTNESS);
-          toggle_cooldown = TOGGLE_COOLDOWN_TICKS;
-        }
+        bool tap = (fsm_timer < PRESS_TAP_MAX_MS && !had_rotation);
         fsm_state = FSM_IDLE;
+        if (max_clicks <= 1) {
+          if (tap) {
+            // Quick tap without intentional rotation — toggle immediately
+            if (cb) cb(H2_ENC_ACTION_TOGGLE, 0, H2_ENC_MODE_BRIGHTNESS);
+            toggle_cooldown = TOGGLE_COOLDOWN_TICKS;
+          }
+        } else if (!click_wait) {
+          // Report every click the moment it happens: the first as a single, the second
+          // as a double, the third as a triple. No delay, but a double is preceded by a
+          // single.
+          if (!tap) {
+            click_count = 0;
+          } else {
+            uint8_t n = ++click_count;
+            fire_clicks(n);
+            if (n < max_clicks) {
+              click_count = n;
+              fsm_state = FSM_CLICK_WAIT;
+              fsm_timer = 0;
+            }
+          }
+        } else if (!tap) {
+          fire_clicks(click_count);          // not a click: deliver what was collected
+        } else if (++click_count >= max_clicks) {
+          fire_clicks(click_count);          // no more clicks possible: no need to wait
+        } else {
+          fsm_state = FSM_CLICK_WAIT;        // wait to see whether another click follows
+          fsm_timer = 0;
+        }
       }
       break;
 
     case FSM_CLICK_WAIT:
       fsm_timer += 10;
       if (delta != 0 && cb) {
-        // Rotation during wait — fire toggle first, then rotation
-        cb(H2_ENC_ACTION_TOGGLE, 0, H2_ENC_MODE_BRIGHTNESS);
-        toggle_cooldown = TOGGLE_COOLDOWN_TICKS;
+        // Rotation during wait — deliver the clicks first, then the rotation
+        fire_clicks(click_wait ? click_count : 0);
         cb(H2_ENC_ACTION_ROTATE, delta, H2_ENC_MODE_BRIGHTNESS);
         fsm_state = FSM_IDLE;
       } else if (changed && pressed) {
-        // Second press within timeout — enter color temp mode
-        fsm_state = FSM_COLOR_HOLD;
+        // Another press within the window: count it when it is released
+        fsm_state = FSM_PRESSED;
+        fsm_timer = 0;
+        had_rotation = false;
       } else if (fsm_timer >= CLICK_TIMEOUT_MS) {
-        // Timeout — single click
-        if (cb) cb(H2_ENC_ACTION_TOGGLE, 0, H2_ENC_MODE_BRIGHTNESS);
-        toggle_cooldown = TOGGLE_COOLDOWN_TICKS;
+        fire_clicks(click_wait ? click_count : 0);   // without waiting they were already reported
         fsm_state = FSM_IDLE;
       }
       break;

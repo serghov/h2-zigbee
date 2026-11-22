@@ -17,7 +17,7 @@
 #define BUDGET_MESSAGES       8            // radio messages per event
 #define TIMER_MIN_MS          50
 #define ZCL_PAYLOAD_MAX       64
-#define BOOT_EVENT_DELAY_MS   3000
+#define BOOT_EVENT_DELAY_MS   500
 
 typedef struct {
   uint16_t length;
@@ -168,6 +168,10 @@ static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *o
     case 12:  // log_value(tag, value)
       sl_zigbee_app_debug_println("Rules: log %ld = %ld", (long)a[0], (long)a[1]);
       return 0;
+    case 13:  // max_clicks(button, clicks, wait)
+      if (a[1] < 1 || a[1] > 3) return (uint64_t)-1;
+      h2_rules_host_max_clicks((uint8_t)a[0], (uint8_t)a[1], a[2] != 0);
+      return 0;
     default:
       *ok = false;
       return 0;
@@ -241,6 +245,9 @@ static void stop_program(void)
     sl_zigbee_af_event_set_inactive(&timers[i]);
   }
   memset(vars, 0, sizeof(vars));
+  for (uint8_t b = 0; b < 8; b++) {
+    h2_rules_host_max_clicks(b, 1, false);   // gesture settings belong to the program
+  }
 }
 
 // ---------------------------------------------------------------------------
