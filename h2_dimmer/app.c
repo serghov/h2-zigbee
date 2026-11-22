@@ -31,7 +31,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000043  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000044  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -1116,6 +1116,7 @@ void sl_zigbee_af_main_init_cb(void)
   h2_led_init();
   h2_opple_init();
   h2_scenes_init();
+  h2_led_ep_init();
   h2_temperature_init();
 
   // Set encoder sensitivity from stored config

@@ -23,6 +23,15 @@
 #define H2_LED_EP_FIRST         21
 #define H2_LED_EP_ATTR_MANUAL   0xFFD0     // uint32 bitmask, bit n = LED n is manual
 
+// Persistence: what a manual LED was set to (on/off, level, hue, saturation) is a setting,
+// not transient state. It is saved to NVM3 a couple of seconds after the last change and
+// restored after a restart or power loss. An automatic LED stores only that it is
+// automatic.
+//
+// Call once from sl_zigbee_af_main_init_cb(); the restore itself runs shortly after boot,
+// once the framework's attributes exist.
+void h2_led_ep_init(void);
+
 // Number of LED endpoints this variant has.
 uint8_t h2_led_ep_count(void);
 

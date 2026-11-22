@@ -4,9 +4,28 @@
 #include "h2_led.h"
 #include "h2_variant.h"
 #include "h2_led_config.h"
+#include "nvm3_default.h"
 
 #define ZCL_COLOR_ATTR_HUE   0x0000
 #define ZCL_COLOR_ATTR_SAT   0x0001
+
+#define NVM3_KEY_LED_EP     0x0230
+#define LED_EP_MAX          4
+#define SAVE_DELAY_MS       2000     // after the last change; limits flash writes from sliders
+#define RESTORE_DELAY_MS    1500     // after boot, when the attribute tables exist
+
+typedef struct {
+  uint8_t manual;
+  uint8_t on;
+  uint8_t level;
+  uint8_t hue;
+  uint8_t sat;
+} led_setting_t;
+
+static led_setting_t settings[LED_EP_MAX];
+static bool restoring;
+static sl_zigbee_af_event_t save_event;
+static sl_zigbee_af_event_t restore_event;
 
 uint8_t h2_led_ep_count(void)
 {
@@ -102,6 +121,15 @@ static void apply_endpoint(uint8_t endpoint)
     red  = (uint8_t)((uint16_t)red  * level / 254);
     blue = (uint8_t)((uint16_t)blue * level / 254);
   }
+  if (led < LED_EP_MAX) {
+    led_setting_t now = { 1, on, level, hue, sat };
+    if (memcmp(&settings[led], &now, sizeof(now)) != 0) {
+      settings[led] = now;
+      if (!restoring) {
+        sl_zigbee_af_event_set_delay_ms(&save_event, SAVE_DELAY_MS);
+      }
+    }
+  }
   h2_led_override_set(gang, pos, red, blue);
   sl_zigbee_app_debug_println("LED %d: on=%d level=%d hue=%d sat=%d -> red %d blue %d",
                                led, on, level, hue, sat, red, blue);
@@ -178,6 +206,45 @@ void h2_led_ep_release(uint8_t led)
   uint8_t gang; h2_led_position_t pos;
   led_position(led, &gang, &pos);
   h2_led_override_clear(gang, pos);
+  if (led < LED_EP_MAX && settings[led].manual) {
+    settings[led].manual = 0;
+    sl_zigbee_af_event_set_delay_ms(&save_event, SAVE_DELAY_MS);
+  }
+}
+
+static void save_handler(sl_zigbee_af_event_t *event)
+{
+  (void)event;
+  nvm3_writeData(nvm3_defaultHandle, NVM3_KEY_LED_EP, settings, sizeof(settings));
+  sl_zigbee_app_debug_println("LED settings saved");
+}
+
+static void restore_handler(sl_zigbee_af_event_t *event)
+{
+  (void)event;
+  led_setting_t stored[LED_EP_MAX];
+  if (nvm3_readData(nvm3_defaultHandle, NVM3_KEY_LED_EP, stored, sizeof(stored)) != ECODE_NVM3_OK) {
+    return;                       // nothing saved: every LED stays automatic
+  }
+  restoring = true;
+  for (uint8_t led = 0; led < h2_led_ep_count() && led < LED_EP_MAX; led++) {
+    if (!stored[led].manual) continue;
+    uint8_t endpoint = (uint8_t)(H2_LED_EP_FIRST + led);
+    write_u8(endpoint, ZCL_COLOR_CONTROL_CLUSTER_ID, ZCL_COLOR_ATTR_HUE, stored[led].hue, ZCL_INT8U_ATTRIBUTE_TYPE);
+    write_u8(endpoint, ZCL_COLOR_CONTROL_CLUSTER_ID, ZCL_COLOR_ATTR_SAT, stored[led].sat, ZCL_INT8U_ATTRIBUTE_TYPE);
+    write_u8(endpoint, ZCL_LEVEL_CONTROL_CLUSTER_ID, ZCL_CURRENT_LEVEL_ATTRIBUTE_ID, stored[led].level, ZCL_INT8U_ATTRIBUTE_TYPE);
+    write_u8(endpoint, ZCL_ON_OFF_CLUSTER_ID, ZCL_ON_OFF_ATTRIBUTE_ID, stored[led].on, ZCL_BOOLEAN_ATTRIBUTE_TYPE);
+    apply_endpoint(endpoint);
+    sl_zigbee_app_debug_println("LED %d: restored saved setting", led);
+  }
+  restoring = false;
+}
+
+void h2_led_ep_init(void)
+{
+  sl_zigbee_af_event_init(&save_event, save_handler);
+  sl_zigbee_af_event_init(&restore_event, restore_handler);
+  sl_zigbee_af_event_set_delay_ms(&restore_event, RESTORE_DELAY_MS);
 }
 
 bool h2_led_ep_attr_get(uint16_t attr_id, uint32_t *value)
