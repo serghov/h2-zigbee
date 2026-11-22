@@ -20,6 +20,9 @@ typedef struct {
   TIMER_TypeDef *timer_blue;
   uint8_t cc_red;
   uint8_t cc_blue;
+  bool    override;      // manual ownership: use ov_red/ov_blue instead of the targets
+  uint8_t ov_red;
+  uint8_t ov_blue;
 } led_pwm_t;
 
 typedef struct {
@@ -456,6 +459,37 @@ void h2_led_set_one(uint8_t gang, h2_led_position_t pos, uint8_t color, uint8_t 
   led->target_blue = b;
 }
 
+static led_pwm_t *led_at(uint8_t gang, h2_led_position_t pos)
+{
+  if (gang >= H2_SWITCH_GANG_COUNT) return NULL;
+#if H2_LED_HAS_DN
+  return (pos == H2_LED_UP) ? &gangs[gang].led_up : &gangs[gang].led_dn;
+#else
+  return (pos == H2_LED_UP) ? &gangs[gang].led_up : NULL;
+#endif
+}
+
+void h2_led_override_set(uint8_t gang, h2_led_position_t pos, uint8_t red, uint8_t blue)
+{
+  led_pwm_t *led = led_at(gang, pos);
+  if (led == NULL) return;
+  led->ov_red = red;
+  led->ov_blue = blue;
+  led->override = true;
+}
+
+void h2_led_override_clear(uint8_t gang, h2_led_position_t pos)
+{
+  led_pwm_t *led = led_at(gang, pos);
+  if (led != NULL) led->override = false;
+}
+
+bool h2_led_override_active(uint8_t gang, h2_led_position_t pos)
+{
+  led_pwm_t *led = led_at(gang, pos);
+  return led != NULL && led->override;
+}
+
 void h2_led_set_on_color(uint8_t gang, uint8_t color)
 {
   if (gang >= h2_active_gang_count) return;
@@ -481,14 +515,14 @@ void h2_led_tick(void)
 {
   for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     led_pwm_t *up = &gangs[g].led_up;
-    up->current_red  = step_towards(up->current_red,  up->target_red);
-    up->current_blue = step_towards(up->current_blue, up->target_blue);
+    up->current_red  = step_towards(up->current_red,  up->override ? up->ov_red  : up->target_red);
+    up->current_blue = step_towards(up->current_blue, up->override ? up->ov_blue : up->target_blue);
     apply_pwm(up);
 
 #if H2_LED_HAS_DN
     led_pwm_t *dn = &gangs[g].led_dn;
-    dn->current_red  = step_towards(dn->current_red,  dn->target_red);
-    dn->current_blue = step_towards(dn->current_blue, dn->target_blue);
+    dn->current_red  = step_towards(dn->current_red,  dn->override ? dn->ov_red  : dn->target_red);
+    dn->current_blue = step_towards(dn->current_blue, dn->override ? dn->ov_blue : dn->target_blue);
     apply_pwm(dn);
 #endif
   }

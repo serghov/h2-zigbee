@@ -10,6 +10,10 @@
 #include "h2_relay.h"
 #include "h2_tap.h"
 #include "h2_scenes.h"
+#include "h2_variant.h"
+#if H2_HAS_LED_ENDPOINTS
+#include "h2_led_ep.h"
+#endif
 #include "h2_build.h"
 #endif
 #if H2_HAS_DIMMER
@@ -224,6 +228,28 @@ static void write_resp_header(uint8_t seq_no, uint8_t cmd_id)
 }
 
 // ---------------------------------------------------------------------------
+// uint32 extension attributes provided by other modules
+// ---------------------------------------------------------------------------
+
+static bool ext_attr_get(uint16_t attr_id, uint32_t *value)
+{
+  if (h2_scenes_attr_get(attr_id, value)) return true;
+#if H2_HAS_LED_ENDPOINTS
+  if (h2_led_ep_attr_get(attr_id, value)) return true;
+#endif
+  return false;
+}
+
+static bool ext_attr_set(uint16_t attr_id, uint32_t value)
+{
+  if (h2_scenes_attr_set(attr_id, value)) return true;
+#if H2_HAS_LED_ENDPOINTS
+  if (h2_led_ep_attr_set(attr_id, value)) return true;
+#endif
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Read Attributes handler
 // ---------------------------------------------------------------------------
 
@@ -242,7 +268,7 @@ static void handle_read_attributes(uint8_t endpoint, uint16_t source_node,
     appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
 
     uint32_t scene_value;
-    if (h2_scenes_attr_get(attr_id, &scene_value)) {
+    if (ext_attr_get(attr_id, &scene_value)) {
       appResponseData[appResponseLength++] = ZCL_STATUS_SUCCESS;
       appResponseData[appResponseLength++] = ZCL_INT32U_ATTRIBUTE_TYPE;
       memcpy(&appResponseData[appResponseLength], &scene_value, 4);
@@ -483,7 +509,8 @@ static void handle_write_attributes(uint8_t endpoint, uint16_t source_node,
 // Diagnostic tap attributes (0xFFF1 mode, 0xFFF2 inject). One attribute per write.
 // ---------------------------------------------------------------------------
 
-// Scene-slot attributes (see h2_scenes.h): one uint32 attribute per write.
+// uint32 extension attributes: scene slots (h2_scenes.h) and LED ownership (h2_led_ep.h).
+// One attribute per write.
 static bool handle_scene_write(uint8_t endpoint, uint16_t source_node, uint8_t seq_no,
                                const uint8_t *payload, uint16_t payload_len)
 {
@@ -491,13 +518,13 @@ static bool handle_scene_write(uint8_t endpoint, uint16_t source_node, uint8_t s
   uint16_t attr_id  = payload[0] | ((uint16_t)payload[1] << 8);
   uint8_t data_type = payload[2];
   uint32_t current;
-  if (!h2_scenes_attr_get(attr_id, &current)) return false;
+  if (!ext_attr_get(attr_id, &current)) return false;
 
   uint8_t status = ZCL_STATUS_INVALID_VALUE;
   if (data_type == ZCL_INT32U_ATTRIBUTE_TYPE && payload_len >= 7) {
     uint32_t value = (uint32_t)payload[3] | ((uint32_t)payload[4] << 8)
                    | ((uint32_t)payload[5] << 16) | ((uint32_t)payload[6] << 24);
-    h2_scenes_attr_set(attr_id, value);
+    ext_attr_set(attr_id, value);
     status = ZCL_STATUS_SUCCESS;
   }
 

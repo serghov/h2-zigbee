@@ -21,6 +21,7 @@
 #include "h2_safe.h"
 #include "h2_console.h"
 #include "h2_scenes.h"
+#include "h2_led_ep.h"
 #include "h2_encoder.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -30,7 +31,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000041  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000043  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -813,6 +814,10 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
 
   (void)manufacturerCode; (void)type; (void)size;
 
+  if (mask == CLUSTER_MASK_SERVER) {
+    h2_led_ep_attribute_changed(endpoint, clusterId);   // LED light endpoints
+  }
+
   if (endpoint != DIMMER_ENDPOINT || mask != CLUSTER_MASK_SERVER) return;
 
   if (clusterId == ZCL_ON_OFF_CLUSTER_ID
@@ -1050,6 +1055,10 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
 bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
 {
   if (h2_safe_mode_active()) return false;
+
+  if (h2_led_ep_command(cmd)) {
+    return true;      // an LED light endpoint took it
+  }
 
   if (cmd->apsFrame->clusterId != ZCL_LEVEL_CONTROL_CLUSTER_ID
       || cmd->apsFrame->destinationEndpoint != DIMMER_ENDPOINT

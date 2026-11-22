@@ -56,6 +56,13 @@ void h2_led_set_on_color(uint8_t gang, uint8_t color);
 void h2_led_set_off_color(uint8_t gang, uint8_t color);
 void h2_led_set_brightness(uint8_t gang, uint8_t brightness);
 
+// Raw override of one LED: red and blue duty 0-255, independent of the gang's mode.
+// While an override is active the indicator logic does not touch that LED ("manual"
+// ownership). Clearing it hands the LED back to the indicator logic ("automatic").
+void h2_led_override_set(uint8_t gang, h2_led_position_t pos, uint8_t red, uint8_t blue);
+void h2_led_override_clear(uint8_t gang, h2_led_position_t pos);
+bool h2_led_override_active(uint8_t gang, h2_led_position_t pos);
+
 // Query tracked light state (for FOLLOW_LIGHT mode decisions)
 bool h2_led_get_light_state(uint8_t gang);
 
