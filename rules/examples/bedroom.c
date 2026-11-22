@@ -14,8 +14,11 @@
 // them off, the next press of the same button turns them "off" again (nothing visible)
 // and the one after that turns them on. The other button always works at once.
 //
-// The bulbs are switched with commands that skip their fade (IKEA bulbs fade on the plain
-// On and Off commands whatever their transition setting says).
+// IKEA bulb quirks this works around (TRADFRI E27 WS globe 1055lm):
+//  - Turning on with "Move to Level with On/Off" alone can leave the bulb dark while it
+//    reports "on". An explicit On command after it is needed (ZHA does the same for IKEA).
+//  - After "Off with Effect" these bulbs did not come back on at all, so the plain Off
+//    command is used; the bulb fades out over about half a second by itself.
 #include "../h2_rules.h"
 
 #define GROUP         16              // Zigbee group with the ceiling bulbs
@@ -34,7 +37,8 @@
 #define MODE_DAY      1
 #define MODE_NIGHT    2
 
-// Level Control, Move to Level with On/Off, transition time 0: on at once at this level.
+// Level Control, Move to Level with On/Off, transition time 0: jump to this level; then
+// an explicit On (On/Off cluster, command 1).
 static inline void bulbs_on(long level)
 {
   u8 p[3];
@@ -42,15 +46,13 @@ static inline void bulbs_on(long level)
   p[1] = 0;                           // transition time, 16 bit
   p[2] = 0;
   zcl_group(GROUP, 0x0008, 0x04, p, 3);
+  zcl_group(GROUP, 0x0006, 0x01, 0, 0);
 }
 
-// On/Off cluster, Off with Effect, effect 0 variant 1 = no fade.
+// On/Off cluster, plain Off (command 0).
 static inline void bulbs_off(void)
 {
-  u8 p[2];
-  p[0] = 0;
-  p[1] = 1;
-  zcl_group(GROUP, 0x0006, 0x40, p, 2);
+  zcl_group(GROUP, 0x0006, 0x00, 0, 0);
 }
 
 // Colour Control, Move to Colour Temperature: mireds and transition time, both 16 bit.
