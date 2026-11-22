@@ -21,6 +21,7 @@ add_executable(h2_dimmer
     "../../common/h2_opple.c"
     "../../common/h2_power.c"
     "../../common/h2_relay.c"
+    "../../common/h2_role.c"
     "../../common/h2_safe.c"
     "../../common/h2_tap.c"
     "../../common/h2_temperature.c"
@@ -46,6 +47,8 @@ target_compile_options(h2_dimmer PUBLIC
 
 target_link_options(h2_dimmer PUBLIC
     # Set additional linker flags here
+    # h2_role.c applies the Zigbee role during framework start-up
+    "-Wl,--wrap=sl_zigbee_af_endpoint_configure"
 )
 
 # Bench build: H2_BENCH=1 in the environment enables development-only features

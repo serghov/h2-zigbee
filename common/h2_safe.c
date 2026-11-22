@@ -54,6 +54,14 @@ bool h2_safe_mode_active(void)
   return safe_mode;
 }
 
+void h2_safe_mark_healthy(void)
+{
+  if (!safe_mode && record.fails != 0) {
+    record.fails = 0;
+    save_record();
+  }
+}
+
 uint8_t h2_safe_fail_count(void)
 {
   return record.fails;

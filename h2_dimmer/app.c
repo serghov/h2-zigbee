@@ -20,6 +20,8 @@
 #include "h2_tap.h"
 #include "h2_safe.h"
 #include "h2_console.h"
+#include "h2_role.h"
+#include "h2_build.h"
 #include "h2_encoder.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -29,7 +31,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000038  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000003D  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -1063,35 +1065,22 @@ bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
 }
 
 //--------------------------------------------------
-// EXPERIMENT (sleepy end device): get onto the network in the right role without anyone
-// touching the knob. If still joined as a router from an earlier build, leave; if not
-// joined, start joining. Bench only.
+// Bench builds: join an open network without anyone touching the knob, so role changes
+// can be tested hands-free. Release builds leave joining to the user.
 
-// The role this experimental build should end up in; must match zigbee_device_config.h.
-#define H2_EXPERIMENT_NODE_TYPE SL_ZIGBEE_SLEEPY_END_DEVICE
+static sl_zigbee_af_event_t auto_join_event;
 
-static sl_zigbee_af_event_t role_fix_event;
-
-static void role_fix_handler(sl_zigbee_af_event_t *event)
+static void auto_join_handler(sl_zigbee_af_event_t *event)
 {
-  sl_zigbee_network_status_t state = sl_zigbee_af_network_state();
-  sl_zigbee_node_type_t type = SL_ZIGBEE_UNKNOWN_DEVICE;
-  sl_status_t type_status = sl_zigbee_af_get_node_type(&type);
-  sl_zigbee_app_debug_println("role fix: state=%d node type=%d (status 0x%02X)", state, type, type_status);
-  if (state == SL_ZIGBEE_JOINED_NETWORK
-      && sl_zigbee_af_get_node_type(&type) == SL_STATUS_OK
-      && type == H2_EXPERIMENT_NODE_TYPE) {
-    return;   // done
-  }
-  if (state == SL_ZIGBEE_JOINED_NETWORK_NO_PARENT) {
-    // An end device that lost its parent rejoins by itself; leaving here would throw the
-    // network away after every reboot.
-  } else if (state == SL_ZIGBEE_JOINED_NETWORK) {
-    sl_zigbee_leave_network(SL_ZIGBEE_LEAVE_NWK_WITH_NO_OPTION);   // still a router: leave
-  } else if (state == SL_ZIGBEE_NO_NETWORK) {
+#if H2_BENCH
+  if (sl_zigbee_af_network_state() == SL_ZIGBEE_NO_NETWORK) {
+    sl_zigbee_app_debug_println("auto join: no network, starting steering");
     sl_zigbee_af_network_steering_start();
   }
   sl_zigbee_af_event_set_delay_ms(event, 20000);
+#else
+  (void)event;
+#endif
 }
 
 //--------------------------------------------------
@@ -1102,6 +1091,9 @@ void sl_zigbee_af_main_init_cb(void)
   h2_console_init();   // bench builds only; a no-op otherwise
 
   bool safe_mode = h2_safe_boot(H2_FIRMWARE_VERSION);
+
+  // The Zigbee role was applied during framework start-up; finish its set-up.
+  h2_role_init();
 
   // Erase storage slot 0 so stale OTA images don't get re-applied.
   // This takes about a second; keep the watchdog fed around it.
@@ -1153,14 +1145,15 @@ void sl_zigbee_af_main_init_cb(void)
   sl_zigbee_af_event_set_active(&power_on_event);
 
   // Reduce APS ACK timeout
-  // EXPERIMENT (sleepy end device): keep the default APS acknowledgement timeout. A device
+  // Keep the default APS acknowledgement timeout: as a sleepy end device the plate fetches
+  // acknowledgements by polling and cannot meet a shortened one. A device
   // that fetches acknowledgements by polling cannot meet 500 ms. Poll once a second when
   // idle and every 250 ms while the stack expects data (acknowledgements, OTA blocks).
   sl_zigbee_af_set_long_poll_interval_qs_cb(4);
   sl_zigbee_af_set_short_poll_interval_ms_cb(250);
 
-  sl_zigbee_af_event_init(&role_fix_event, role_fix_handler);
-  sl_zigbee_af_event_set_delay_ms(&role_fix_event, 5000);
+  sl_zigbee_af_event_init(&auto_join_event, auto_join_handler);
+  sl_zigbee_af_event_set_delay_ms(&auto_join_event, 5000);
 
   // Start periodic ticks
   sl_zigbee_af_event_set_delay_ms(&encoder_tick_event, ENCODER_TICK_MS);

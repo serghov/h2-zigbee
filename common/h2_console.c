@@ -14,6 +14,7 @@
 #include "sl_cli.h"
 #include "sl_sleeptimer.h"
 #include "btl_interface.h"
+#include "h2_role.h"
 
 #define CON_TX_PORT   gpioPortB
 #define CON_TX_PIN    0
@@ -169,8 +170,29 @@ static const sl_cli_command_info_t cmd_h2load_info =
                  "image size in bytes",
                  { SL_CLI_ARG_UINT32, SL_CLI_ARG_END, });
 
+// "h2role" prints the Zigbee role; "h2role 0|1" switches to router or sleepy end device
+// (leaves the network and reboots).
+static void cmd_h2role(sl_cli_command_arg_t *arguments)
+{
+  if (sl_cli_get_argument_count(arguments) > 0) {
+    uint8_t role = sl_cli_get_argument_uint8(arguments, 0);
+    sl_zigbee_app_debug_println("h2role: switching to %d", role);
+    h2_role_set(role);
+  } else {
+    sl_zigbee_app_debug_println("h2role: %d (%s)", h2_role_get(),
+                                 h2_role_get() == H2_ROLE_ROUTER ? "router" : "sleepy end device");
+  }
+}
+
+static const sl_cli_command_info_t cmd_h2role_info =
+  SL_CLI_COMMAND(cmd_h2role,
+                 "Show or set the Zigbee role",
+                 "0 = router, 1 = sleepy end device",
+                 { SL_CLI_ARG_UINT8OPT, SL_CLI_ARG_END, });
+
 static const sl_cli_command_entry_t h2_command_table[] = {
   { "h2load", &cmd_h2load_info, false },
+  { "h2role", &cmd_h2role_info, false },
   { NULL, NULL, false },
 };
 

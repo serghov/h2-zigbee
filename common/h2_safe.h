@@ -31,6 +31,10 @@ void h2_safe_start(void);
 
 bool h2_safe_mode_active(void);
 
+// Count the current boot as healthy now, without waiting H2_SAFE_HEALTHY_S. For deliberate
+// reboots such as a role change, which must not add up to a safe-mode entry.
+void h2_safe_mark_healthy(void);
+
 // Number of consecutive unhealthy boots including this one (diagnostics).
 uint8_t h2_safe_fail_count(void);
 
