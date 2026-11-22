@@ -169,7 +169,37 @@ static const sl_cli_command_info_t cmd_h2load_info =
                  "image size in bytes",
                  { SL_CLI_ARG_UINT32, SL_CLI_ARG_END, });
 
+// "h2pin <port> <pin> <mode>": drive one processor pin, to find out what it is wired to.
+// port 0-3 = A-D; mode 0 = released (disabled), 1 = driven low, 2 = driven high. The pin
+// Pins used by SWD, the wall UART and this console are refused.
+static void cmd_h2pin(sl_cli_command_arg_t *arguments)
+{
+  uint8_t port = sl_cli_get_argument_uint8(arguments, 0);
+  uint8_t pin = sl_cli_get_argument_uint8(arguments, 1);
+  uint8_t mode = sl_cli_get_argument_uint8(arguments, 2);
+  bool reserved = (port == 0 && (pin == 1 || pin == 2 || pin == 5 || pin == 6 || pin == 7))
+                  || (port == 1 && pin == 0);
+  if (port > 3 || pin > 9 || mode > 2 || reserved) {
+    sl_zigbee_app_debug_println("h2pin: refused");
+    return;
+  }
+  if (mode == 0) {
+    GPIO_PinModeSet((GPIO_Port_TypeDef)port, pin, gpioModeDisabled, 0);
+  } else {
+    GPIO_PinModeSet((GPIO_Port_TypeDef)port, pin, gpioModePushPull, mode == 2 ? 1 : 0);
+  }
+  sl_zigbee_app_debug_println("h2pin: P%c%d %s", 'A' + port, pin,
+                               mode == 0 ? "released" : (mode == 1 ? "low" : "high"));
+}
+
+static const sl_cli_command_info_t cmd_h2pin_info =
+  SL_CLI_COMMAND(cmd_h2pin,
+                 "Drive a processor pin: port(0-3=A-D) pin mode(0 release, 1 low, 2 high)",
+                 "port" SL_CLI_UNIT_SEPARATOR "pin" SL_CLI_UNIT_SEPARATOR "mode",
+                 { SL_CLI_ARG_UINT8, SL_CLI_ARG_UINT8, SL_CLI_ARG_UINT8, SL_CLI_ARG_END, });
+
 static const sl_cli_command_entry_t h2_command_table[] = {
+  { "h2pin", &cmd_h2pin_info, false },
   { "h2load", &cmd_h2load_info, false },
   { NULL, NULL, false },
 };
