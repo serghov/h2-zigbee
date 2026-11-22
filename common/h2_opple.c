@@ -196,7 +196,7 @@ static int8_t endpoint_to_gang(uint8_t endpoint)
 // Send helper
 // ---------------------------------------------------------------------------
 
-static void send_unicast(uint8_t endpoint, uint16_t dest_node)
+static sl_zigbee_aps_frame_t reply_aps_frame(uint8_t endpoint)
 {
   sl_zigbee_aps_frame_t aps = {
     .profileId           = HA_PROFILE_ID,
@@ -206,6 +206,21 @@ static void send_unicast(uint8_t endpoint, uint16_t dest_node)
     .options             = SL_ZIGBEE_AF_DEFAULT_APS_OPTIONS
                          | SL_ZIGBEE_APS_OPTION_ENCRYPTION,
   };
+  return aps;
+}
+
+// Longest reply that fits in one message to this node. It is shorter than the response
+// buffer (encryption and routing overhead); a longer reply is not sent at all.
+static uint16_t reply_limit(uint8_t endpoint, uint16_t dest_node)
+{
+  sl_zigbee_aps_frame_t aps = reply_aps_frame(endpoint);
+  uint16_t limit = sl_zigbee_af_maximum_aps_payload_length(SL_ZIGBEE_OUTGOING_DIRECT, dest_node, &aps);
+  return limit < SL_ZIGBEE_AF_RESPONSE_BUFFER_LEN ? limit : SL_ZIGBEE_AF_RESPONSE_BUFFER_LEN;
+}
+
+static void send_unicast(uint8_t endpoint, uint16_t dest_node)
+{
+  sl_zigbee_aps_frame_t aps = reply_aps_frame(endpoint);
 
   sl_zigbee_af_send_unicast(SL_ZIGBEE_OUTGOING_DIRECT,
                             dest_node,
@@ -262,6 +277,7 @@ static void handle_read_attributes(uint8_t endpoint, uint16_t source_node,
                                    const uint8_t *payload, uint16_t payload_len)
 {
   write_resp_header(seq_no, ZCL_CMD_READ_ATTR_RESPONSE);
+  uint16_t limit = reply_limit(endpoint, source_node);
 
   uint16_t off = 0;
   while (off + 2 <= payload_len) {
@@ -270,7 +286,7 @@ static void handle_read_attributes(uint8_t endpoint, uint16_t source_node,
 
     // Largest record is 2 (id) + 1 (status) + 1 (type) + 4 (value). Attributes that do
     // not fit in the response are left out; the reader asks for them again.
-    if (appResponseLength + 8 > SL_ZIGBEE_AF_RESPONSE_BUFFER_LEN) break;
+    if (appResponseLength + 8 > limit) break;
 
     appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
     appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
@@ -680,10 +696,11 @@ bool h2_opple_handle_safe_message(uint8_t endpoint, uint16_t source_node,
   if (msg[4] != ZCL_CMD_READ_ATTRIBUTES) return false;
 
   write_resp_header(seq_no, ZCL_CMD_READ_ATTR_RESPONSE);
+  uint16_t limit = reply_limit(endpoint, source_node);
   for (uint16_t off = 0; off + 2 <= payload_len; off += 2) {
     uint16_t attr_id = payload[off] | ((uint16_t)payload[off + 1] << 8);
     uint32_t value;
-    if (appResponseLength + 8 > SL_ZIGBEE_AF_RESPONSE_BUFFER_LEN) break;
+    if (appResponseLength + 8 > limit) break;
     appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
     appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
     if (h2_rules_attr_get(attr_id, &value)) {

@@ -13,12 +13,16 @@
 //
 // Safe mode ends when a different firmware version is installed, or by itself after
 // H2_SAFE_EXIT_MIN minutes (it then reboots into normal mode for another try).
-// Power-cycling the device H2_SAFE_FAIL_LIMIT times in quick succession also enters it.
+// Boots after a power-on, brown-out or reset pin count for much less than boots after a
+// crash, so mains flicker does not take the switch out of service: it takes more than
+// H2_SAFE_FAIL_LIMIT * H2_SAFE_CRASH_WEIGHT short power-ups in a row (13) to enter safe mode,
+// against H2_SAFE_FAIL_LIMIT + 1 short boots after crashes (4).
 
 #include <stdint.h>
 #include <stdbool.h>
 
 #define H2_SAFE_FAIL_LIMIT   3
+#define H2_SAFE_CRASH_WEIGHT 4
 #define H2_SAFE_HEALTHY_S    60
 #define H2_SAFE_EXIT_MIN     30
 #define H2_SAFE_JOIN_RETRY_S 30   // in safe mode without a network: try to join this often
@@ -31,7 +35,8 @@ void h2_safe_start(void);
 
 bool h2_safe_mode_active(void);
 
-// Number of consecutive unhealthy boots including this one (diagnostics).
+// Failure score of the consecutive unhealthy boots including this one (diagnostics):
+// H2_SAFE_CRASH_WEIGHT per boot after a crash, 1 per boot after a power-up.
 uint8_t h2_safe_fail_count(void);
 
 // Boot diagnostics, readable over Zigbee in normal AND safe mode: manufacturer-specific

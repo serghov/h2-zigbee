@@ -41,10 +41,14 @@ bool h2_safe_boot(uint32_t firmware_version)
     record.resets[i] = record.resets[i - 1];
   }
   record.resets[0] = halGetExtendedResetInfo();
-  if (record.fails < 255) {
-    record.fails++;
-  }
-  safe_mode = record.fails > H2_SAFE_FAIL_LIMIT;
+  // A boot after a crash, hang or software fault weighs H2_SAFE_CRASH_WEIGHT; a boot after
+  // a power-on, brown-out or reset pin weighs 1. Mains flicker and contact bounce give
+  // several short power-ups in a row and must not take the switch out of service.
+  uint8_t base = (uint8_t)(record.resets[0] >> 8);
+  uint8_t weight = (base == RESET_POWERON || base == RESET_BROWNOUT || base == RESET_EXTERNAL)
+                   ? 1 : H2_SAFE_CRASH_WEIGHT;
+  record.fails = (record.fails > 255 - weight) ? 255 : (uint8_t)(record.fails + weight);
+  safe_mode = record.fails > H2_SAFE_FAIL_LIMIT * H2_SAFE_CRASH_WEIGHT;
   save_record();
   return safe_mode;
 }
