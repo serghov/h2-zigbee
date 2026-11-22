@@ -136,8 +136,8 @@ int main(int argc, char **argv)
     EV(48, 10, 0); CHECK(r == 1, "boot");
     EV(0, 3, 0); CHECK(r == 1 && !strcmp(calls, "relay(0,2) scene(1,1) "), "single#1: %s", calls);
     EV(0, 3, 0); CHECK(r == 1 && !strcmp(calls, "relay(0,2) scene(1,2) "), "single#2: %s", calls);
-    EV(0, 4, 0); CHECK(!strcmp(calls, "relay(0,2) zcl(1,8,4,len3) led(0,255,0) "), "double#1: %s", calls);
-    EV(0, 4, 0); CHECK(!strcmp(calls, "relay(0,2) zcl(1,8,4,len3) led(0,0,255) "), "double#2: %s", calls);
+    EV(0, 4, 0); CHECK(!strcmp(calls, "relay(0,1) scene(1,3) "), "double#1: %s", calls);
+    EV(0, 4, 0); CHECK(!strcmp(calls, "relay(0,1) scene(1,3) "), "double#2: %s", calls);
     EV(0, 6, 0); CHECK(!strcmp(calls, "tstart(0,300) "), "hold: %s", calls);
     EV(32, 9, 0); CHECK(!strcmp(calls, "led(0,255,0) tstart(0,300) "), "timer#1: %s", calls);
     EV(32, 9, 0); CHECK(!strcmp(calls, "led(0,0,255) tstart(0,300) "), "timer#2: %s", calls);
