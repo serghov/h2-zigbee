@@ -39,9 +39,14 @@ void EUSART0_RX_IRQHandler(void)
   EUSART_IntClear(EUSART0, EUSART_IF_RXFL);
 }
 
+static volatile bool con_quiet;     // true while h2sleep lets the chip sleep
+
 static sl_status_t con_write(void *context, const void *buffer, size_t length)
 {
   (void)context;
+  if (con_quiet) {
+    return SL_STATUS_OK;
+  }
   const uint8_t *p = (const uint8_t *)buffer;
   for (size_t i = 0; i < length; i++) {
     EUSART_Tx(EUSART0, p[i]);       // blocking, about 87 us per byte
@@ -161,6 +166,9 @@ static void cmd_h2load(sl_cli_command_arg_t *arguments)
   if (offset < size) { load_say("\nH2LOAD FAIL short\n"); return; }
   if (bootloader_setImageToBootload(0) != BOOTLOADER_OK) { load_say("\nH2LOAD FAIL set\n"); return; }
   load_say("\nH2LOAD DONE\n");
+  while (!(EUSART0->STATUS & EUSART_STATUS_TXC)) {
+    // let the last byte leave before the reset cuts it off
+  }
   bootloader_rebootAndInstall();
 }
 
@@ -190,7 +198,39 @@ static const sl_cli_command_info_t cmd_h2role_info =
                  "0 = router, 1 = sleepy end device",
                  { SL_CLI_ARG_UINT8OPT, SL_CLI_ARG_END, });
 
+// "h2sleep <seconds>": for current measurements. The console normally keeps the
+// high-frequency clock on, which prevents deep sleep. This drops that requirement and
+// silences the console for the given time, so a sleepy end device sleeps as it would in a
+// release build. The console does not respond until the time is up.
+static sl_zigbee_af_event_t sleep_window_event;
+
+static void sleep_window_handler(sl_zigbee_af_event_t *event)
+{
+  (void)event;
+  sl_power_manager_add_em_requirement(SL_POWER_MANAGER_EM1);
+  con_quiet = false;
+  sl_zigbee_app_debug_println("h2sleep: window over, console awake");
+}
+
+static void cmd_h2sleep(sl_cli_command_arg_t *arguments)
+{
+  uint16_t seconds = sl_cli_get_argument_uint16(arguments, 0);
+  sl_zigbee_app_debug_println("h2sleep: console off for %d s", seconds);
+  while (!(EUSART0->STATUS & EUSART_STATUS_TXC)) {
+  }
+  con_quiet = true;
+  sl_zigbee_af_event_set_delay_ms(&sleep_window_event, (uint32_t)seconds * 1000);
+  sl_power_manager_remove_em_requirement(SL_POWER_MANAGER_EM1);
+}
+
+static const sl_cli_command_info_t cmd_h2sleep_info =
+  SL_CLI_COMMAND(cmd_h2sleep,
+                 "Let the chip sleep for a while (console off) to measure current",
+                 "seconds",
+                 { SL_CLI_ARG_UINT16, SL_CLI_ARG_END, });
+
 static const sl_cli_command_entry_t h2_command_table[] = {
+  { "h2sleep", &cmd_h2sleep_info, false },
   { "h2load", &cmd_h2load_info, false },
   { "h2role", &cmd_h2role_info, false },
   { NULL, NULL, false },
@@ -230,6 +270,7 @@ void h2_console_init(void)
   sl_iostream_set_default(&console_stream);
   sl_cli_example_handle->iostream_handle = &console_stream;
   sl_cli_command_add_command_group(sl_cli_example_handle, &h2_command_group);
+  sl_zigbee_af_event_init(&sleep_window_event, sleep_window_handler);
 
   sl_zigbee_app_debug_println("");
   sl_zigbee_app_debug_println("H2 bench console ready");
