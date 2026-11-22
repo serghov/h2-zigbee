@@ -1,8 +1,12 @@
 // Rules for a 2-button switch that drives a room light on its relay and a Zigbee bulb
 // (or several) in group 1.
 //
-//   upper button   toggles the relay; the bulb follows it (on with the relay, off with it)
+//   upper button   toggles the relay; the bulb follows it: on in cool light with the
+//                  relay, off with it
 //   lower button   bulb only: warm light, and on the next click off
+//
+// Colour changes are sent with no transition time. How fast the bulb turns on and off is
+// the bulb's own setting (Level Control attribute OnOffTransitionTime, 0 = at once).
 //
 // Both buttons are taken over (PRESS returns 1), so the firmware's own press behaviour
 // is off for them.
@@ -11,6 +15,7 @@
 #define GROUP        1
 #define UPPER        H2_SRC_BUTTON(0)
 #define LOWER        H2_SRC_BUTTON(1)
+#define COOL_MIREDS  250              // 4000 K, the coolest this bulb goes
 #define WARM_MIREDS  454              // 2200 K, the warmest this bulb goes
 #define VAR_WARM     0                // 1 while the lower button has the bulb in warm light
 
@@ -22,12 +27,12 @@ static inline void bulb_on_off(long on)
 
 // Colour Control cluster, Move to Colour Temperature: mireds, then transition time in
 // tenths of a second, both 16 bit, low byte first.
-static inline void bulb_warm(void)
+static inline void bulb_colour(long mireds)
 {
   u8 p[4];
-  p[0] = (u8)(WARM_MIREDS & 0xFF);
-  p[1] = (u8)(WARM_MIREDS >> 8);
-  p[2] = 5;
+  p[0] = (u8)(mireds & 0xFF);
+  p[1] = (u8)(mireds >> 8);
+  p[2] = 0;                           // no transition
   p[3] = 0;
   zcl_group(GROUP, 0x0300, 0x0A, p, 4);
 }
@@ -43,7 +48,12 @@ int on_event(struct h2_event *ev)
 
   if (ev->source == UPPER) {
     relay_set(0, H2_TOGGLE);
-    bulb_on_off(relay_get(0));
+    if (relay_get(0)) {
+      bulb_on_off(1);
+      bulb_colour(COOL_MIREDS);
+    } else {
+      bulb_on_off(0);
+    }
     var_set(VAR_WARM, 0);
     return 1;
   }
@@ -54,7 +64,7 @@ int on_event(struct h2_event *ev)
     var_set(VAR_WARM, 0);
   } else {
     bulb_on_off(1);
-    bulb_warm();
+    bulb_colour(WARM_MIREDS);
     var_set(VAR_WARM, 1);
   }
   return 1;
