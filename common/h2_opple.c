@@ -9,6 +9,7 @@
 #if H2_HAS_RELAY || H2_HAS_DIMMER
 #include "h2_relay.h"
 #include "h2_tap.h"
+#include "h2_build.h"
 #endif
 #if H2_HAS_DIMMER
 #include "h2_encoder.h"
@@ -475,6 +476,10 @@ static void handle_write_attributes(uint8_t endpoint, uint16_t source_node,
 static bool handle_tap_write(uint8_t endpoint, uint16_t source_node, uint8_t seq_no,
                              const uint8_t *payload, uint16_t payload_len)
 {
+#if !H2_BENCH
+  (void)endpoint; (void)source_node; (void)seq_no; (void)payload; (void)payload_len;
+  return false;   // bench-only attributes do not exist in release builds
+#else
   if (payload_len < 4) return false;
   uint16_t attr_id  = payload[0] | ((uint16_t)payload[1] << 8);
   uint8_t data_type = payload[2];
@@ -516,6 +521,7 @@ static bool handle_tap_write(uint8_t endpoint, uint16_t source_node, uint8_t seq
   }
   send_unicast(endpoint, source_node);
   return true;
+#endif
 }
 
 // ---------------------------------------------------------------------------

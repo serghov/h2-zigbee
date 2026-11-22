@@ -19,6 +19,7 @@
 #include "h2_relay.h"
 #include "h2_tap.h"
 #include "h2_safe.h"
+#include "h2_console.h"
 #include "h2_encoder.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -28,7 +29,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x0000002C  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000002E  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -1066,6 +1067,8 @@ bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
 
 void sl_zigbee_af_main_init_cb(void)
 {
+  h2_console_init();   // bench builds only; a no-op otherwise
+
   bool safe_mode = h2_safe_boot(H2_FIRMWARE_VERSION);
 
   // Erase storage slot 0 so stale OTA images don't get re-applied.

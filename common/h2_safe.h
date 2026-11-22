@@ -8,8 +8,8 @@
 // OTA reachable, the firmware counts boots that did not stay up for H2_SAFE_HEALTHY_S. After
 // H2_SAFE_FAIL_LIMIT such boots in a row it starts in safe mode: the Zigbee stack and OTA
 // client run, but no application hardware or message handling does, and the red LED blinks.
-// If the device has no network in safe mode it tries to join an open one every
-// H2_SAFE_JOIN_RETRY_S seconds, starting 2 s after boot.
+// In bench builds only (H2_BENCH), a device with no network in safe mode tries to join an
+// open one every H2_SAFE_JOIN_RETRY_S seconds, starting 2 s after boot.
 //
 // Safe mode ends when a different firmware version is installed, or by itself after
 // H2_SAFE_EXIT_MIN minutes (it then reboots into normal mode for another try).

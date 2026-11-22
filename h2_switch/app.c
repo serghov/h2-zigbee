@@ -19,6 +19,7 @@
 #include "h2_relay.h"
 #include "h2_tap.h"
 #include "h2_safe.h"
+#include "h2_console.h"
 #include "h2_button.h"
 #include "h2_led.h"
 #include "h2_opple.h"
@@ -28,7 +29,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000076  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000077  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -731,6 +732,8 @@ static void light_sync_handler(sl_zigbee_af_event_t *event)
 
 void sl_zigbee_af_main_init_cb(void)
 {
+  h2_console_init();   // bench builds only; a no-op otherwise
+
   bool safe_mode = h2_safe_boot(H2_FIRMWARE_VERSION);
 
   // Erase storage slot 0 so stale OTA images don't get re-applied on boot.

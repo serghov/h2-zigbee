@@ -1,8 +1,12 @@
+#include "h2_build.h"
+#include "h2_tap.h"
+
+#if H2_BENCH
+
 #include "app/framework/include/af.h"
 #include "app/framework/util/common.h"
 #include "sl_sleeptimer.h"
 
-#include "h2_tap.h"
 #include "h2_opple.h"
 
 #define TAP_QUEUE_LEN      8
@@ -121,3 +125,12 @@ void h2_tap_tick(void)
   }
   last_send_tick = now;
 }
+
+#else  // !H2_BENCH: the tap does not exist in release builds
+
+void h2_tap_set_mode(uint8_t mode) { (void)mode; }
+uint8_t h2_tap_get_mode(void) { return H2_TAP_MODE_OFF; }
+void h2_tap_record(uint8_t dir, const uint8_t *frame, uint16_t len) { (void)dir; (void)frame; (void)len; }
+void h2_tap_tick(void) {}
+
+#endif

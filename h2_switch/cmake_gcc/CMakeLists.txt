@@ -15,6 +15,7 @@ include(h2_switch.cmake)
 add_executable(h2_switch
     # Add additional sources here
     "../../common/h2_button.c"
+    "../../common/h2_console.c"
     "../../common/h2_led.c"
     "../../common/h2_opple.c"
     "../../common/h2_power.c"
@@ -45,6 +46,13 @@ target_compile_options(h2_switch PUBLIC
 target_link_options(h2_switch PUBLIC
     # Set additional linker flags here
 )
+
+# Bench build: H2_BENCH=1 in the environment enables development-only features
+# (see common/h2_build.h). Release builds leave it unset.
+if(DEFINED ENV{H2_BENCH})
+    target_compile_definitions(slc PUBLIC H2_BENCH=$ENV{H2_BENCH})
+    message(STATUS "H2_BENCH=$ENV{H2_BENCH}")
+endif()
 
 # Link with the content defined in the SLC project
 target_link_libraries(h2_switch PRIVATE
