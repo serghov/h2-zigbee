@@ -8,10 +8,18 @@ Copy this file into the directory named by `zha: custom_quirks_path:`.
 
 from zigpy import types as t
 from zigpy.profiles import zha
+from zigpy.zcl.clusters.general import DeviceTemperature
+from zigpy.zcl.clusters.homeautomation import ElectricalMeasurement
+from zigpy.zcl.clusters.smartenergy import Metering
 from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
 
 from zhaquirks.builder import QuirkBuilder
-from zhaquirks.xiaomi import XiaomiAqaraE1Cluster
+from zhaquirks.xiaomi import (
+    DeviceTemperatureCluster,
+    ElectricalMeasurementCluster,
+    MeteringCluster,
+    XiaomiAqaraE1Cluster,
+)
 
 
 class HexBytes(t.LVBytes):
@@ -31,8 +39,57 @@ def _attr(attr_id, attr_type, access="rw"):
     return ZCLAttributeDef(id=attr_id, type=attr_type, access=access, is_manufacturer_specific=True)
 
 
+class H2ElectricalMeasurement(ElectricalMeasurementCluster):
+    """Local electrical measurement: power in 0.1 W, current in mA, voltage in V."""
+
+    _CONSTANT_ATTRIBUTES = {
+        **ElectricalMeasurementCluster._CONSTANT_ATTRIBUTES,
+        ElectricalMeasurement.AttributeDefs.ac_current_multiplier.id: 1,
+        ElectricalMeasurement.AttributeDefs.ac_current_divisor.id: 1000,
+    }
+
+
 class H2Cluster(XiaomiAqaraE1Cluster):
     """Aqara manufacturer cluster (0xFCC0) with the h2-zigbee additions."""
+
+    # The firmware reports its measurements as single attributes on this cluster, as the
+    # stock firmware does. They are passed on to standard clusters that exist only in
+    # Home Assistant, which gives the usual power, energy, current and temperature sensors.
+    ATTR_TEMPERATURE = 0x0003   # whole degrees Celsius, signed
+    ATTR_ENERGY = 0x0095        # kWh
+    ATTR_VOLTAGE = 0x0096       # volts x 100 (dimmer only)
+    ATTR_CURRENT = 0x0097       # mA
+    ATTR_POWER = 0x0098         # W
+
+    def _update_attribute(self, attrid, value):
+        super()._update_attribute(attrid, value)
+        attr_id = attrid if isinstance(attrid, int) else getattr(attrid, "id", None)
+        if value is None or attr_id is None:
+            return
+        ep = self.endpoint
+        try:
+            if attr_id == self.ATTR_POWER:
+                ep.electrical_measurement.update_attribute(
+                    ElectricalMeasurement.AttributeDefs.active_power.id, round(value * 10)
+                )
+            elif attr_id == self.ATTR_CURRENT:
+                ep.electrical_measurement.update_attribute(
+                    ElectricalMeasurement.AttributeDefs.rms_current.id, round(value)
+                )
+            elif attr_id == self.ATTR_VOLTAGE:
+                ep.electrical_measurement.update_attribute(
+                    ElectricalMeasurement.AttributeDefs.rms_voltage.id, round(value / 100)
+                )
+            elif attr_id == self.ATTR_ENERGY:
+                ep.smartenergy_metering.update_attribute(
+                    Metering.AttributeDefs.current_summ_delivered.id, round(value * 1000)
+                )
+            elif attr_id == self.ATTR_TEMPERATURE:
+                ep.device_temperature.update_attribute(
+                    DeviceTemperature.AttributeDefs.current_temperature.id, value * 100
+                )
+        except AttributeError:
+            pass   # the endpoint this report came from has no such local cluster
 
     class AttributeDefs(BaseAttributeDefs):
         # Stock attributes the firmware implements
@@ -68,6 +125,12 @@ class H2Cluster(XiaomiAqaraE1Cluster):
     QuirkBuilder("h2-zigbee", "lumi.switch.agl011")
     .replaces_endpoint(1, device_type=zha.DeviceType.DIMMABLE_LIGHT)
     .replaces(H2Cluster)
+    .adds(H2ElectricalMeasurement)
+    .adds(MeteringCluster)
+    .adds(DeviceTemperatureCluster)
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="apparent_power")
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="ac_frequency")
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="power_factor")
     .add_to_registry()
 )
 
@@ -76,5 +139,12 @@ class H2Cluster(XiaomiAqaraE1Cluster):
     QuirkBuilder("h2-zigbee", "lumi.switch.agl009")
     .applies_to("h2-zigbee", "lumi.switch.agl010")
     .replaces(H2Cluster)
+    .adds(H2ElectricalMeasurement)
+    .adds(MeteringCluster)
+    .adds(DeviceTemperatureCluster)
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="apparent_power")
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="ac_frequency")
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="power_factor")
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="rms_voltage")
     .add_to_registry()
 )
