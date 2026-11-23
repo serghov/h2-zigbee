@@ -111,6 +111,13 @@ static void on_measurement_rx(uint16_t cmd_id, uint8_t data_type,
       detected_gang_count = data[0];
     }
   }
+  // Wall-module events (stock: over-power 0x0500, over-temperature 0x0501, ...). Recorded
+  // for diagnostics; 0x0504 is a periodic value, not an event.
+  if ((cmd_id >> 8) == 0x05 && cmd_id != 0x0504) {
+    uint32_t v = 0;
+    for (uint8_t i = 0; i < data_len && i < 4; i++) v |= (uint32_t)data[i] << (8 * i);
+    h2_relay_note_protection(cmd_id, v);
+  }
   if (data_type != 0x55 || data_len != sizeof(float)) return;
 
   measurement_t *measurement;
@@ -229,7 +236,9 @@ static void power_poll_handler(sl_zigbee_af_event_t *event)
     }
   }
 
-  h2_relay_send_measurement_query(0);
+  if (!h2_relay_busy()) {            // never interleave with a relay command in flight
+    h2_relay_send_measurement_query(0);
+  }
   if (++report_counter >= REPORT_INTERVAL) {
     report_counter = 0;
     report_measurements(now);

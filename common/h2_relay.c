@@ -7,6 +7,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 #include "sl_power_manager.h"
+#include "sl_sleeptimer.h"
 #include <string.h>
 
 #include "h2_variant.h"
@@ -41,19 +42,20 @@ static uint16_t crc16_modbus(const uint8_t *data, uint8_t len)
   return crc;
 }
 
-// Generic packet builder + blocking transmit
-// Payload must already be written to buf starting at index 8
-static void relay_send_packet(uint16_t type, uint8_t cmd,
-                               const uint8_t *payload, uint8_t payload_len)
-{
-  uint8_t buf[72];  // 8 header + max 62 payload + 2 CRC
-  uint8_t total = 8 + payload_len + 2;
+// ---------------------------------------------------------------------------
+// Frame builder and transmitter
+// ---------------------------------------------------------------------------
 
+#define FRAME_MAX 72   // 8 header + max 62 payload + 2 CRC
+
+static uint8_t build_frame(uint8_t *buf, uint16_t type, uint8_t cmd, uint8_t frame_seq,
+                           const uint8_t *payload, uint8_t payload_len)
+{
   // Header (big-endian type, big-endian payload_len)
   buf[0] = 0x55;
   buf[1] = (uint8_t)(type >> 8);
   buf[2] = (uint8_t)(type & 0xFF);
-  buf[3] = seq++;
+  buf[3] = frame_seq;
   buf[4] = cmd;
   buf[5] = (uint8_t)(payload_len >> 8);
   buf[6] = (uint8_t)(payload_len & 0xFF);
@@ -65,7 +67,6 @@ static void relay_send_packet(uint16_t type, uint8_t cmd,
   }
   buf[7] = (uint8_t)(0x100 - hdr_sum);
 
-  // Payload
   if (payload_len > 0 && payload != NULL) {
     memcpy(&buf[8], payload, payload_len);
   }
@@ -74,8 +75,16 @@ static void relay_send_packet(uint16_t type, uint8_t cmd,
   uint16_t crc = crc16_modbus(buf, 8 + payload_len);
   buf[8 + payload_len]     = (uint8_t)(crc & 0xFF);
   buf[8 + payload_len + 1] = (uint8_t)(crc >> 8);
+  return (uint8_t)(8 + payload_len + 2);
+}
 
-  // Log TX packet
+// True while a confirmed relay command is in flight (see "Confirmed relay commands").
+// The attention line WALL2 then stays low for the whole exchange.
+static bool set_in_flight(void);
+
+static void transmit_frame(const uint8_t *buf, uint8_t total)
+{
+  uint8_t payload_len = (uint8_t)(total - 10);
   sl_zigbee_app_debug_print("TX PKT type=%02X%02X cmd=%02X plen=%d [",
                              buf[1], buf[2], buf[4], payload_len);
   uint8_t dump = (payload_len < 24) ? payload_len : 24;
@@ -90,27 +99,198 @@ static void relay_send_packet(uint16_t type, uint8_t cmd,
   // glitch pulses on the TX line that corrupt every packet
   sl_power_manager_add_em_requirement(SL_POWER_MANAGER_EM1);
 
+  bool held = set_in_flight();          // WALL2 is already low and stays low
 #if H2_HAS_DIMMER
   // Dimmer stock firmware: WALL2 only goes low for SET commands,
   // held for the entire exchange. ACK/query packets don't toggle WALL2.
-  if (cmd == RELAY_CMD_SET) {
-    GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
-  }
+  bool pulse = !held && (buf[4] == RELAY_CMD_SET);
 #else
-  GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
+  bool pulse = !held;
 #endif
-
-  UARTDRV_TransmitB(sl_uartdrv_eusart_wall_uart_handle, buf, total);
-
-#if H2_HAS_DIMMER
-  if (cmd == RELAY_CMD_SET) {
-    GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
-  }
-#else
-  GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
-#endif
+  if (pulse) GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
+  UARTDRV_TransmitB(sl_uartdrv_eusart_wall_uart_handle, (uint8_t *)buf, total);
+  if (pulse) GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
 
   sl_power_manager_remove_em_requirement(SL_POWER_MANAGER_EM1);
+}
+
+// Build and send one frame at once, unconfirmed (reads, acknowledgements, settings).
+static void relay_send_packet(uint16_t type, uint8_t cmd,
+                               const uint8_t *payload, uint8_t payload_len)
+{
+  uint8_t buf[FRAME_MAX];
+  uint8_t total = build_frame(buf, type, cmd, seq++, payload, payload_len);
+  transmit_frame(buf, total);
+}
+
+// ---------------------------------------------------------------------------
+// Confirmed relay commands
+//
+// The stock firmware pulls the attention line low, waits, sends the request, and repeats
+// it with the same sequence number until the wall module replies (command 3, same
+// sequence number). A relay command sent once with no lead time can go unheard, and the
+// plate would then report a state the relay is not in. One command is in flight at a
+// time; a newer command for the relays replaces a waiting one.
+// ---------------------------------------------------------------------------
+
+#define SET_LEAD_MS    20     // attention line low before the first byte
+#define SET_REPLY_MS   100    // wait for the reply before repeating
+#define SET_TRIES      3
+#define SET_HOLD_MS    100    // attention line stays low at least this long
+
+typedef enum { SET_IDLE, SET_LEAD, SET_WAIT, SET_HOLD } set_phase_t;
+
+static struct {
+  set_phase_t phase;
+  uint8_t  frame[FRAME_MAX];
+  uint8_t  len;
+  uint8_t  tries;
+  uint32_t started;           // sleeptimer ticks
+  uint32_t phase_since;
+  bool     queued;
+  uint8_t  queued_frame[FRAME_MAX];
+  uint8_t  queued_len;
+} set_tx;
+
+static h2_relay_link_stats_t link_stats;
+
+static uint32_t ms_since(uint32_t tick)
+{
+  return sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count() - tick);
+}
+
+static bool set_in_flight(void)
+{
+  return set_tx.phase != SET_IDLE;
+}
+
+bool h2_relay_busy(void)
+{
+  return set_in_flight();
+}
+
+static void set_start(void)
+{
+  set_tx.tries = 0;
+  set_tx.started = set_tx.phase_since = sl_sleeptimer_get_tick_count();
+  set_tx.phase = SET_LEAD;
+  GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
+}
+
+static void set_submit(const uint8_t *frame, uint8_t len)
+{
+  if (set_tx.phase == SET_IDLE) {
+    memcpy(set_tx.frame, frame, len);
+    set_tx.len = len;
+    set_start();
+  } else {
+    memcpy(set_tx.queued_frame, frame, len);   // the newest command wins
+    set_tx.queued_len = len;
+    set_tx.queued = true;
+  }
+}
+
+static void set_finish(bool acked, uint8_t status)
+{
+  link_stats.last_tries = set_tx.tries;
+  link_stats.last_acked = acked;
+  link_stats.last_status = status;
+  if (acked) {
+    if (link_stats.acked < 255) link_stats.acked++;
+  } else {
+    if (link_stats.unacked < 255) link_stats.unacked++;
+    sl_zigbee_app_debug_println("Relay: no reply from the wall module after %d tries", set_tx.tries);
+  }
+  set_tx.phase = SET_HOLD;
+}
+
+// Called for every received frame: is it the reply to the command in flight?
+static void set_on_frame(const uint8_t *frame, uint16_t len)
+{
+  if (set_tx.phase != SET_WAIT || frame[4] != RELAY_CMD_QUERY || frame[3] != set_tx.frame[3]) {
+    return;
+  }
+  uint16_t plen = ((uint16_t)frame[5] << 8) | frame[6];
+  set_finish(true, (plen > 0 && len >= 9) ? frame[8] : 0);
+}
+
+static void set_service(void)
+{
+  switch (set_tx.phase) {
+    case SET_IDLE:
+      break;
+    case SET_LEAD:
+      if (ms_since(set_tx.phase_since) >= SET_LEAD_MS) {
+        set_tx.tries = 1;
+        set_tx.phase = SET_WAIT;
+        set_tx.phase_since = sl_sleeptimer_get_tick_count();
+        transmit_frame(set_tx.frame, set_tx.len);
+      }
+      break;
+    case SET_WAIT:
+      if (ms_since(set_tx.phase_since) >= SET_REPLY_MS) {
+        if (set_tx.tries < SET_TRIES) {
+          set_tx.tries++;
+          set_tx.phase_since = sl_sleeptimer_get_tick_count();
+          transmit_frame(set_tx.frame, set_tx.len);
+        } else {
+          set_finish(false, 0);
+        }
+      }
+      break;
+    case SET_HOLD:
+      if (ms_since(set_tx.started) >= SET_HOLD_MS) {
+        GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
+        set_tx.phase = SET_IDLE;
+        if (set_tx.queued) {
+          set_tx.queued = false;
+          memcpy(set_tx.frame, set_tx.queued_frame, set_tx.queued_len);
+          set_tx.len = set_tx.queued_len;
+          set_start();
+        }
+      }
+      break;
+  }
+}
+
+static void relay_send_confirmed(const uint8_t *payload, uint8_t payload_len)
+{
+  uint8_t buf[FRAME_MAX];
+  uint8_t total = build_frame(buf, RELAY_TYPE, RELAY_CMD_SET, seq++, payload, payload_len);
+  if (link_stats.sent < 255) link_stats.sent++;
+  set_submit(buf, total);
+}
+
+void h2_relay_note_protection(uint16_t entry_id, uint32_t value)
+{
+  link_stats.protection_entry = entry_id;
+  link_stats.protection_value = value;
+  if (link_stats.protection_events < 255) link_stats.protection_events++;
+  sl_zigbee_app_debug_println("Relay: wall module event 0x%04X = %lu", entry_id, (unsigned long)value);
+}
+
+const h2_relay_link_stats_t *h2_relay_link_stats(void)
+{
+  return &link_stats;
+}
+
+bool h2_relay_attr_get(uint16_t attr_id, uint32_t *value)
+{
+  switch (attr_id) {
+    case H2_RELAY_ATTR_LINK:
+      *value = ((uint32_t)link_stats.unacked << 24) | ((uint32_t)link_stats.acked << 16)
+             | ((uint32_t)((set_in_flight() ? 0x02 : 0) | (link_stats.last_acked ? 0x01 : 0)
+                           | (link_stats.protection_events ? 0x04 : 0)) << 8)
+             | (uint32_t)((link_stats.last_tries << 4) | (link_stats.last_status & 0x0F));
+      return true;
+    case H2_RELAY_ATTR_EVENT:
+      *value = ((uint32_t)link_stats.protection_events << 24)
+             | ((uint32_t)(link_stats.protection_value & 0xFF) << 16)
+             | link_stats.protection_entry;
+      return true;
+    default:
+      return false;
+  }
 }
 
 static void relay_send_set(uint8_t gang, h2_relay_state_t state)
@@ -122,7 +302,7 @@ static void relay_send_set(uint8_t gang, h2_relay_state_t state)
   payload[1] = gang;      // cmd_lo: gang index (0-based)
   payload[2] = 0x55;      // data_type marker
   payload[3] = (state == H2_RELAY_ON) ? 0x01 : 0x00;
-  relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
+  relay_send_confirmed(payload, sizeof(payload));
 }
 
 // ---------------------------------------------------------------------------
@@ -243,9 +423,11 @@ void h2_relay_set_rx_callback(h2_relay_rx_callback_t cb)
 
 void h2_relay_process_rx(void)
 {
+  set_service();
   if (!rx_packet_ready) {
     return;
   }
+  set_on_frame(rx_dispatch_buf, rx_dispatch_len);
 
   // Log raw packet header + first bytes for debugging
   {
@@ -265,12 +447,10 @@ void h2_relay_process_rx(void)
   // Send ACK echoing the wall module's sequence number,
   // but only for measurement reports (cmd=0x05), not for wall ACKs (cmd=0x03)
   if (rx_dispatch_buf[4] == 0x05) {
-    uint8_t rx_seq = rx_dispatch_buf[3];
-    uint8_t saved_seq = seq;
-    seq = rx_seq;
     uint8_t ack_payload[3] = {0, 0, 0};
-    relay_send_packet(RELAY_TYPE, RELAY_CMD_QUERY, ack_payload, 3);
-    seq = saved_seq;
+    uint8_t ack[FRAME_MAX];
+    uint8_t ack_len = build_frame(ack, RELAY_TYPE, RELAY_CMD_QUERY, rx_dispatch_buf[3], ack_payload, 3);
+    transmit_frame(ack, ack_len);
   }
 
   if (rx_callback != NULL) {
@@ -499,7 +679,7 @@ void h2_relay_set(uint8_t gang, h2_relay_state_t state)
   payload[15] = (uint8_t)(on_off_transition_ms >> 16);
   payload[16] = (uint8_t)(on_off_transition_ms >> 8);
   payload[17] = (uint8_t)(on_off_transition_ms);
-  relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
+  relay_send_confirmed(payload, sizeof(payload));
 #else
   relay_send_set(gang, state);
 #endif

@@ -29,6 +29,33 @@ void h2_relay_send_raw(uint16_t type, uint8_t cmd,
 // Set relay state for a gang (0-indexed)
 void h2_relay_set(uint8_t gang, h2_relay_state_t state);
 
+// A relay command is confirmed: it is repeated until the wall module replies (see
+// h2_relay.c). These counters say how that went; they saturate at 255.
+typedef struct {
+  uint8_t  sent;               // relay commands issued
+  uint8_t  acked;              // ... that the wall module replied to
+  uint8_t  unacked;            // ... that got no reply after all tries
+  uint8_t  last_tries;         // transmissions used by the last command (1..3)
+  bool     last_acked;
+  uint8_t  last_status;        // first status byte of the last reply
+  uint8_t  protection_events;  // wall-module event entries 0x05xx seen
+  uint16_t protection_entry;   // the last one
+  uint32_t protection_value;
+} h2_relay_link_stats_t;
+
+const h2_relay_link_stats_t *h2_relay_link_stats(void);
+bool h2_relay_busy(void);      // a relay command is in flight: hold other requests back
+void h2_relay_note_protection(uint16_t entry_id, uint32_t value);
+
+// Read-only diagnostics on the Opple cluster (uint32):
+//   LINK   (unanswered << 24) | (answered << 16) | (flags << 8) | (tries << 4) | status
+//          flags: bit 0 last command answered, bit 1 a command is in flight,
+//                 bit 2 a wall-module event (over-power, over-temperature, ...) was seen
+//   EVENT  (event count << 24) | (low byte of the value << 16) | entry id of the last event
+#define H2_RELAY_ATTR_LINK    0xFFC8
+#define H2_RELAY_ATTR_EVENT   0xFFC9
+bool h2_relay_attr_get(uint16_t attr_id, uint32_t *value);
+
 // Get current relay state for a gang (0-indexed)
 h2_relay_state_t h2_relay_get(uint8_t gang);
 

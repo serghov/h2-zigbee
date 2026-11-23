@@ -32,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x0000007D  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000007E  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -956,7 +956,22 @@ void sl_zigbee_af_radio_needs_calibrating_cb(void)
 bool sl_zigbee_af_pre_command_received_cb(sl_zigbee_af_cluster_command_t *cmd)
 {
   if (h2_safe_mode_active()) return false;
-  return h2_led_ep_command(cmd);
+  if (h2_led_ep_command(cmd)) return true;
+
+  // On or Off for a relay that the plate already believes is in that state changes no
+  // attribute, so nothing would be sent. Send it anyway: the hub asking again is how a
+  // relay that missed its command gets corrected.
+  if (cmd->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID && cmd->clusterSpecific
+      && !cmd->mfgSpecific && cmd->direction == ZCL_DIRECTION_CLIENT_TO_SERVER
+      && (cmd->commandId == ZCL_OFF_COMMAND_ID || cmd->commandId == ZCL_ON_COMMAND_ID)) {
+    h2_relay_state_t wanted = (cmd->commandId == ZCL_ON_COMMAND_ID) ? H2_RELAY_ON : H2_RELAY_OFF;
+    for (uint8_t g = 0; g < h2_active_gang_count; g++) {
+      if (gangs[g].endpoint == cmd->apsFrame->destinationEndpoint && h2_relay_get(g) == wanted) {
+        h2_relay_set(g, wanted);
+      }
+    }
+  }
+  return false;       // the framework handles the command as usual
 }
 
 // Pre-message-received: intercept messages before framework processing

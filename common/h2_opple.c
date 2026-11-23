@@ -256,6 +256,7 @@ static bool ext_attr_get(uint16_t attr_id, uint32_t *value)
 #if H2_HAS_RULES
   if (h2_rules_attr_get(attr_id, value)) return true;
 #endif
+  if (h2_relay_attr_get(attr_id, value)) return true;
   return false;
 }
 
