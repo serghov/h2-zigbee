@@ -49,6 +49,23 @@ static h2_bpf_vm_t vm;
 static bool running;
 static uint8_t messages_left;
 static uint8_t actions_left;
+
+// Public variables, outside events and the allowance for reacting to them (h2_rules.h)
+#define REPORT_DELAY_MS       300      // collect variable changes before telling the hub
+#define REACTION_TOKENS       4        // radio messages a rule may send in reaction ...
+#define REACTION_REFILL_MS    2500     // ... refilled one at a time: 4 per 10 s sustained
+#define EXT_QUEUE             4
+
+static uint16_t public_mask;           // variables a program has declared public
+static uint16_t dirty_mask;            // public variables changed by the program, not yet reported
+static sl_zigbee_af_event_t report_event;
+static sl_zigbee_af_event_t ext_event;
+static struct { uint8_t type; int32_t value; } ext_queue[EXT_QUEUE];
+static uint8_t ext_count;
+static bool in_reaction;               // the running event came from outside, not from a button
+static uint8_t reaction_tokens = REACTION_TOKENS;
+static uint32_t reaction_refill_tick;
+static uint32_t stat_dropped;          // messages and outside events dropped by the limits
 static uint32_t stat_events, stat_handled, stat_faults;
 static bool safe;                 // safe mode: programs can be uploaded but do not run
 static uint8_t upload_result;     // result of the last commit
@@ -77,6 +94,21 @@ static long send_zcl(bool group, uint16_t dest, uint8_t dest_endpoint, uint16_t 
 {
   if (messages_left == 0 || sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
     return -1;
+  }
+  if (in_reaction) {
+    // Messages sent in reaction to an outside event come from a small allowance, so a
+    // rule that keeps reacting to its own effects slows to a trickle.
+    uint32_t now = halCommonGetInt32uMillisecondTick();
+    while (reaction_tokens < REACTION_TOKENS && now - reaction_refill_tick >= REACTION_REFILL_MS) {
+      reaction_tokens++;
+      reaction_refill_tick += REACTION_REFILL_MS;
+    }
+    if (reaction_tokens == REACTION_TOKENS) reaction_refill_tick = now;
+    if (reaction_tokens == 0) {
+      stat_dropped++;
+      return -1;
+    }
+    reaction_tokens--;
   }
   messages_left--;
 
@@ -165,7 +197,15 @@ static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *o
       return a[0] < H2_RULES_VARS ? (uint64_t)(int64_t)vars[a[0]] : 0;
     case 9:   // var_set(index, value)
       if (a[0] >= H2_RULES_VARS) return (uint64_t)-1;
-      vars[a[0]] = (int32_t)a[1];
+      if (vars[a[0]] != (int32_t)a[1]) {
+        vars[a[0]] = (int32_t)a[1];
+        if (public_mask & (1u << a[0])) {          // tell the hub, once things settle
+          dirty_mask |= (uint16_t)(1u << a[0]);
+          if (!sl_zigbee_af_event_is_scheduled(&report_event)) {
+            sl_zigbee_af_event_set_delay_ms(&report_event, REPORT_DELAY_MS);
+          }
+        }
+      }
       return 0;
     case 10:  // timer_start(id, ms)
       if (a[0] >= H2_RULES_TIMERS) return (uint64_t)-1;
@@ -179,6 +219,10 @@ static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *o
       return 0;
     case 12:  // log_value(tag, value)
       sl_zigbee_app_debug_println("Rules: log %ld = %ld", (long)a[0], (long)a[1]);
+      return 0;
+    case 14:  // var_public(mask)
+      public_mask = (uint16_t)a[0];
+      dirty_mask &= public_mask;
       return 0;
     case 13:  // max_clicks(button, clicks, wait)
       if (a[1] < 1 || a[1] > 3) return (uint64_t)-1;
@@ -219,6 +263,8 @@ bool h2_rules_event(uint8_t source, uint8_t type, int32_t value)
   vm.budget = BUDGET_INSTRUCTIONS;
 
   running = true;
+  in_reaction = (source == H2_RULES_SRC_SYSTEM
+                 && (type == H2_RULES_EV_VAR || type == H2_RULES_EV_TRIGGER));
   messages_left = BUDGET_MESSAGES;
   actions_left = BUDGET_ACTIONS;
   uint64_t result = 0;
@@ -245,6 +291,72 @@ static void timer_handler(sl_zigbee_af_event_t *event)
   (void)h2_rules_event(H2_RULES_SRC_TIMER, H2_RULES_EV_TIMER, id);
 }
 
+// Report the public variables the program changed to the hub, in one message.
+static void report_handler(sl_zigbee_af_event_t *event)
+{
+  sl_zigbee_af_event_set_inactive(event);
+  uint16_t mask = dirty_mask & public_mask;
+  dirty_mask = 0;
+  if (!mask || sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) return;
+
+  uint8_t msg[5 + 7 * 8];
+  uint8_t n = 0;
+  msg[n++] = 0x04 | 0x08 | 0x10;      // global, manufacturer-specific, to client, no default response
+  msg[n++] = 0x5F;                    // Aqara manufacturer code 0x115F
+  msg[n++] = 0x11;
+  msg[n++] = sl_zigbee_af_next_sequence();
+  msg[n++] = 0x0A;                    // Report Attributes
+  for (uint8_t i = 0; i < H2_RULES_VARS; i++) {
+    if (!(mask & (1u << i))) continue;
+    if (n + 7 > sizeof(msg)) {        // the rest goes in the next report
+      dirty_mask |= (uint16_t)(mask & ~((1u << i) - 1));
+      sl_zigbee_af_event_set_delay_ms(&report_event, REPORT_DELAY_MS);
+      break;
+    }
+    uint16_t attr = (uint16_t)(H2_RULES_ATTR_VAR0 + i);
+    msg[n++] = (uint8_t)attr;
+    msg[n++] = (uint8_t)(attr >> 8);
+    msg[n++] = 0x23;                  // uint32
+    memcpy(&msg[n], &vars[i], 4);
+    n += 4;
+  }
+  sl_zigbee_aps_frame_t aps;
+  memset(&aps, 0, sizeof(aps));
+  aps.profileId = 0x0104;
+  aps.clusterId = 0xFCC0;
+  aps.sourceEndpoint = 1;
+  aps.destinationEndpoint = 1;
+  aps.options = SL_ZIGBEE_APS_OPTION_ENABLE_ROUTE_DISCOVERY;
+  (void)sl_zigbee_af_send_unicast(SL_ZIGBEE_OUTGOING_DIRECT, 0x0000, &aps, n, msg);
+}
+
+// Outside events are handed to the program from the main loop, one per pass, not from
+// inside the message handler that received them.
+static void ext_handler(sl_zigbee_af_event_t *event)
+{
+  sl_zigbee_af_event_set_inactive(event);
+  if (ext_count == 0) return;
+  uint8_t type = ext_queue[0].type;
+  int32_t value = ext_queue[0].value;
+  ext_count--;
+  memmove(&ext_queue[0], &ext_queue[1], ext_count * sizeof(ext_queue[0]));
+  (void)h2_rules_event(H2_RULES_SRC_SYSTEM, type, value);
+  if (ext_count) sl_zigbee_af_event_set_active(&ext_event);
+}
+
+static void ext_post(uint8_t type, int32_t value)
+{
+  if (!active) return;
+  if (ext_count >= EXT_QUEUE) {
+    stat_dropped++;
+    return;
+  }
+  ext_queue[ext_count].type = type;
+  ext_queue[ext_count].value = value;
+  ext_count++;
+  sl_zigbee_af_event_set_active(&ext_event);
+}
+
 static void boot_handler(sl_zigbee_af_event_t *event)
 {
   sl_zigbee_af_event_set_inactive(event);
@@ -258,6 +370,9 @@ static void stop_program(void)
     sl_zigbee_af_event_set_inactive(&timers[i]);
   }
   memset(vars, 0, sizeof(vars));
+  public_mask = 0;
+  dirty_mask = 0;
+  ext_count = 0;
   for (uint8_t b = 0; b < 8; b++) {
     h2_rules_host_max_clicks(b, 1, false);   // gesture settings belong to the program
   }
@@ -391,6 +506,8 @@ void h2_rules_init(bool safe_mode)
     sl_zigbee_af_event_init(&timers[i], timer_handler);
   }
   sl_zigbee_af_event_init(&boot_event, boot_handler);
+  sl_zigbee_af_event_init(&report_event, report_handler);
+  sl_zigbee_af_event_init(&ext_event, ext_handler);
 
   if (safe_mode) {
     safe = true;
@@ -421,11 +538,19 @@ bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value)
     case H2_RULES_ATTR_INFO:
       *value = code_len ? (((uint32_t)crc16(code, code_len) << 16) | code_len) : 0;
       return true;
+    case H2_RULES_ATTR_DROPPED:
+      *value = stat_dropped;
+      return true;
     case H2_RULES_ATTR_FAULT:
       *value = ((uint32_t)last_fault << 24) | ((stat_faults > 255 ? 255u : stat_faults) << 16)
              | (last_fault_pc & 0xFFFF);
       return true;
     default:
+      if (attr_id >= H2_RULES_ATTR_VAR0 && attr_id < H2_RULES_ATTR_VAR0 + H2_RULES_VARS
+          && (public_mask & (1u << (attr_id - H2_RULES_ATTR_VAR0)))) {
+        *value = (uint32_t)vars[attr_id - H2_RULES_ATTR_VAR0];
+        return true;
+      }
       return false;
   }
 }
@@ -434,7 +559,28 @@ bool h2_rules_attr_write(uint16_t attr_id, uint8_t zcl_type, const uint8_t *data
                          uint16_t length, bool *ok)
 {
   *ok = false;
-  if (attr_id == H2_RULES_ATTR_INFO || attr_id == H2_RULES_ATTR_FAULT) return true;   // read only
+  if (attr_id == H2_RULES_ATTR_INFO || attr_id == H2_RULES_ATTR_FAULT
+      || attr_id == H2_RULES_ATTR_DROPPED) return true;   // read only
+
+  if (attr_id == H2_RULES_ATTR_TRIGGER
+      || (attr_id >= H2_RULES_ATTR_VAR0 && attr_id < H2_RULES_ATTR_VAR0 + H2_RULES_VARS)) {
+    if (zcl_type != 0x23 || length < 4 || !active) return true;    // uint32, program running
+    int32_t v = (int32_t)((uint32_t)data[0] | ((uint32_t)data[1] << 8)
+                          | ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24));
+    if (attr_id == H2_RULES_ATTR_TRIGGER) {
+      ext_post(H2_RULES_EV_TRIGGER, v);
+      *ok = true;
+      return true;
+    }
+    uint8_t index = (uint8_t)(attr_id - H2_RULES_ATTR_VAR0);
+    if (!(public_mask & (1u << index))) return true;               // private: refused
+    *ok = true;
+    if (vars[index] != v) {            // writing the value it already has does nothing
+      vars[index] = v;
+      ext_post(H2_RULES_EV_VAR, index);
+    }
+    return true;
+  }
 
   if (attr_id == H2_RULES_ATTR_CONTROL) {
     if (zcl_type != 0x23 || length < 4) return true;               // uint32

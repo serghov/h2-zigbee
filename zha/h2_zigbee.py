@@ -108,6 +108,18 @@ class H2Cluster(XiaomiAqaraE1Cluster):
         rules_fault = _attr(0xFFC3, t.uint32_t, "r")
         # LED ownership bitmask (common/h2_led_ep.h)
         led_manual = _attr(0xFFD0, t.uint32_t)
+        # Public rule variables, trigger and limit counter (common/h2_rules.h). Only the
+        # variables the installed program declares public exist on the device.
+        rule_var_0 = _attr(0xFFA0, t.uint32_t)
+        rule_var_1 = _attr(0xFFA1, t.uint32_t)
+        rule_var_2 = _attr(0xFFA2, t.uint32_t)
+        rule_var_3 = _attr(0xFFA3, t.uint32_t)
+        rule_var_4 = _attr(0xFFA4, t.uint32_t)
+        rule_var_5 = _attr(0xFFA5, t.uint32_t)
+        rule_var_6 = _attr(0xFFA6, t.uint32_t)
+        rule_var_7 = _attr(0xFFA7, t.uint32_t)
+        rule_trigger = _attr(0xFFB0, t.uint32_t, "w")
+        rules_dropped = _attr(0xFFC4, t.uint32_t, "r")
         # Wall-module link diagnostics (common/h2_relay.h)
         relay_link = _attr(0xFFC8, t.uint32_t, "r")
         relay_event = _attr(0xFFC9, t.uint32_t, "r")

@@ -47,6 +47,9 @@ struct h2_event {
 #define H2_EV_TIMER         9         // value = timer id
 #define H2_EV_BOOT         10         // once after start-up, and after a program is installed
 #define H2_EV_ROTATE_PRESSED 11       // knob turned while pressed: value = steps
+#define H2_EV_VAR          12         // source H2_SRC_SYSTEM: a public variable was written
+                                      // from outside; value = its index (read it with var_get)
+#define H2_EV_TRIGGER      13         // source H2_SRC_SYSTEM: a trigger arrived; value = its number
 
 // ---- host functions ----------------------------------------------------------------------
 #define H2_FN(id, ret, name, ...) static ret (*name)(__VA_ARGS__) = (void *)id
@@ -55,6 +58,14 @@ struct h2_event {
 #define H2_ON      1
 #define H2_TOGGLE  2
 
+// Public variables: the hub (or anything on the network) can read and write the variables
+// a program declares public, each as attribute 0xFFA0 + index on the Aqara cluster. Call
+// var_public() on H2_EV_BOOT. A write with a new value raises H2_EV_VAR; when the program
+// itself changes a public variable, the switch reports it to the hub. Writing attribute
+// 0xFFB0 raises H2_EV_TRIGGER. Radio messages sent while handling these two events come
+// from a small allowance (about 4 per 10 s); use them to update state and LEDs, not to
+// send commands.
+H2_FN(14, long, var_public,   long mask);                              // bit n = variable n is public
 H2_FN( 1, long, relay_set,    long gang, long mode);                  // H2_OFF / H2_ON / H2_TOGGLE
 H2_FN( 2, long, relay_get,    long gang);                             // 1 if on
 H2_FN( 3, long, level_set,    long gang, long level);                 // dimmer output level 1..254

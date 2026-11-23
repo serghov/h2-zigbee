@@ -44,6 +44,8 @@
 #define H2_RULES_EV_TIMER         9
 #define H2_RULES_EV_BOOT         10
 #define H2_RULES_EV_ROTATE_PRESSED 11
+#define H2_RULES_EV_VAR          12     // a public variable was written from outside; value = index
+#define H2_RULES_EV_TRIGGER      13     // a trigger was written from outside; value = its number
 
 // Call once from sl_zigbee_af_main_init_cb(). Pass true in safe mode: rules stay off.
 void h2_rules_init(bool safe_mode);
@@ -87,6 +89,18 @@ void h2_rules_print_info(void);
 //            Chunks are sent in order; repeating a chunk is harmless.
 //   INFO     uint32, read: (CRC16 of the installed program << 16) | its length; 0 = none
 //   FAULT    uint32, read: (last fault code << 24) | (fault count << 16) | instruction
+//   VAR0..  uint32, one attribute per rule variable (0xFFA0 + index). Only variables the
+//            program declared public (var_public) exist. A write with a new value sets
+//            the variable and raises H2_RULES_EV_VAR in the program; a write of the
+//            value it already has does nothing. When the program changes a public
+//            variable, the device reports the attribute to the hub.
+//   TRIGGER  uint32, write only: raises H2_RULES_EV_TRIGGER with the written number.
+//   DROPPED  uint32, read: radio messages and outside events dropped by the limits.
+// Radio messages a program sends while handling VAR or TRIGGER events come out of a small
+// allowance (4, refilled one per 2.5 s), so reaction loops cannot flood the network.
+#define H2_RULES_ATTR_VAR0      0xFFA0
+#define H2_RULES_ATTR_TRIGGER   0xFFB0
+#define H2_RULES_ATTR_DROPPED   0xFFC4
 #define H2_RULES_ATTR_CONTROL   0xFFC0
 #define H2_RULES_ATTR_DATA      0xFFC1
 #define H2_RULES_ATTR_INFO      0xFFC2
