@@ -295,7 +295,10 @@ static void handle_read_attributes(uint8_t endpoint, uint16_t source_node,
     uint32_t scene_value;
     if (ext_attr_get(attr_id, &scene_value)) {
       appResponseData[appResponseLength++] = ZCL_STATUS_SUCCESS;
-      appResponseData[appResponseLength++] = ZCL_INT32U_ATTRIBUTE_TYPE;
+      // Rule variables are signed; everything else in this group is a bit field or count.
+      appResponseData[appResponseLength++] =
+        (attr_id >= H2_RULES_ATTR_VAR0 && attr_id < H2_RULES_ATTR_VAR0 + H2_RULES_VARS)
+        ? ZCL_INT32S_ATTRIBUTE_TYPE : ZCL_INT32U_ATTRIBUTE_TYPE;
       memcpy(&appResponseData[appResponseLength], &scene_value, 4);
       appResponseLength += 4;
       continue;

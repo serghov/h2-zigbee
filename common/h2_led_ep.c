@@ -311,8 +311,27 @@ static void restore_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
   led_setting_t stored[LED_EP_MAX];
-  if (nvm3_readData(nvm3_defaultHandle, NVM3_KEY_LED_EP, stored, sizeof(stored)) != ECODE_NVM3_OK) {
+  memset(stored, 0, sizeof(stored));
+  uint32_t type;
+  size_t size;
+  if (nvm3_getObjectInfo(nvm3_defaultHandle, NVM3_KEY_LED_EP, &type, &size) != ECODE_NVM3_OK) {
     return;                       // nothing saved: every LED stays automatic
+  }
+  if (size == sizeof(stored)) {
+    if (nvm3_readData(nvm3_defaultHandle, NVM3_KEY_LED_EP, stored, sizeof(stored)) != ECODE_NVM3_OK) return;
+  } else if (size == LED_EP_MAX * 5) {
+    // Saved by a version before the xy colour fields: manual, on, level, hue, sat per LED.
+    uint8_t old[LED_EP_MAX * 5];
+    if (nvm3_readData(nvm3_defaultHandle, NVM3_KEY_LED_EP, old, sizeof(old)) != ECODE_NVM3_OK) return;
+    for (uint8_t i = 0; i < LED_EP_MAX; i++) {
+      stored[i].manual = old[i * 5];
+      stored[i].on     = old[i * 5 + 1];
+      stored[i].level  = old[i * 5 + 2];
+      stored[i].hue    = old[i * 5 + 3];
+      stored[i].sat    = old[i * 5 + 4];
+    }
+  } else {
+    return;                       // a layout this version does not know
   }
   restoring = true;
   for (uint8_t led = 0; led < h2_led_ep_count() && led < LED_EP_MAX; led++) {

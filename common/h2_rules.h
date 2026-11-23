@@ -48,6 +48,8 @@
 #define H2_RULES_EV_VAR          12     // a public variable was written from outside; value = index
 #define H2_RULES_EV_TRIGGER      13     // a trigger was written from outside; value = its number
 #define H2_RULES_EV_REPORT       14     // another device reported an attribute the program watches
+#define H2_RULES_EV_LOST         15     // that device was dropped (silent for an hour, or it came
+                                        // back under a new address): forget what it reported
 
 // Call once from sl_zigbee_af_main_init_cb(). Pass true in safe mode: rules stay off.
 void h2_rules_init(bool safe_mode);
@@ -91,7 +93,7 @@ void h2_rules_print_info(void);
 //            Chunks are sent in order; repeating a chunk is harmless.
 //   INFO     uint32, read: (CRC16 of the installed program << 16) | its length; 0 = none
 //   FAULT    uint32, read: (last fault code << 24) | (fault count << 16) | instruction
-//   VAR0..  uint32, one attribute per rule variable (0xFFA0 + index). Only variables the
+//   VAR0..  int32, one attribute per rule variable (0xFFA0 + index). Only variables the
 //            program declared public (var_public) exist. A write with a new value sets
 //            the variable and raises H2_RULES_EV_VAR in the program; a write of the
 //            value it already has does nothing. When the program changes a public

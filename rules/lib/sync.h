@@ -27,7 +27,12 @@ H2_INLINE void sync_start(long group, long with_colour)
 //   var_mireds:  variable holding the last colour temperature reported (or -1 for none)
 H2_INLINE long sync_report(struct h2_event *ev, long var_on_mask, long var_mireds)
 {
-  if (ev->type != H2_EV_REPORT || !H2_IS_REMOTE(ev->source)) return 0;
+  if (!H2_IS_REMOTE(ev->source)) return 0;
+  if (ev->type == H2_EV_LOST) {         // the lamp is gone: it no longer counts as on
+    var_set(var_on_mask, var_get(var_on_mask) & ~(1 << (ev->source - H2_SRC_REMOTE(0))));
+    return 1;
+  }
+  if (ev->type != H2_EV_REPORT) return 0;
   if (ev->cluster == CL_ON_OFF && ev->attr == ATTR_ON_OFF) {
     long bit = 1 << (ev->source - H2_SRC_REMOTE(0));
     long mask = var_get(var_on_mask);

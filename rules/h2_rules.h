@@ -60,6 +60,8 @@ struct h2_event {
 #define H2_EV_TRIGGER      13         // source H2_SRC_SYSTEM: a trigger arrived; value = its number
 #define H2_EV_REPORT       14         // source H2_SRC_REMOTE(n): that device's attribute
                                       // ev->cluster / ev->attr now has the value ev->value
+#define H2_EV_LOST         15         // source H2_SRC_REMOTE(n): that device is gone (silent for
+                                      // an hour, or back under a new number): forget its state
 
 // ---- host functions ----------------------------------------------------------------------
 #define H2_FN(id, ret, name, ...) static ret (*name)(__VA_ARGS__) = (void *)id

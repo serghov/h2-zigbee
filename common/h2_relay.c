@@ -140,19 +140,25 @@ static void relay_send_packet(uint16_t type, uint8_t cmd,
 
 typedef enum { SET_IDLE, SET_LEAD, SET_WAIT, SET_HOLD } set_phase_t;
 
+// What is in flight is "bring gang N to its wanted state", not a prepared frame: the
+// frame is built when it is first transmitted, from the state wanted at that moment (on
+// the dimmer that includes the current level). Each gang has its own pending flag, so a
+// command for one gang never displaces a waiting command for another, and a change made
+// while a gang's command is in flight is sent in a further exchange.
 static struct {
   set_phase_t phase;
+  uint8_t  gang;
   uint8_t  frame[FRAME_MAX];
   uint8_t  len;
   uint8_t  tries;
   uint32_t started;           // sleeptimer ticks
   uint32_t phase_since;
-  bool     queued;
-  uint8_t  queued_frame[FRAME_MAX];
-  uint8_t  queued_len;
 } set_tx;
+static bool set_pending[H2_SWITCH_GANG_COUNT];
 
 static h2_relay_link_stats_t link_stats;
+
+static uint8_t relay_set_payload(uint8_t gang, uint8_t *payload);   // per variant, below
 
 static uint32_t ms_since(uint32_t tick)
 {
@@ -169,25 +175,26 @@ bool h2_relay_busy(void)
   return set_in_flight();
 }
 
-static void set_start(void)
+// Start an exchange for the next gang that has a command waiting.
+static void set_start_next(void)
 {
-  set_tx.tries = 0;
-  set_tx.started = set_tx.phase_since = sl_sleeptimer_get_tick_count();
-  set_tx.phase = SET_LEAD;
-  GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
+  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    if (!set_pending[g]) continue;
+    set_tx.gang = g;
+    set_tx.tries = 0;
+    set_tx.started = set_tx.phase_since = sl_sleeptimer_get_tick_count();
+    set_tx.phase = SET_LEAD;
+    GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
+    return;
+  }
 }
 
-static void set_submit(const uint8_t *frame, uint8_t len)
+static void relay_send_confirmed(uint8_t gang)
 {
-  if (set_tx.phase == SET_IDLE) {
-    memcpy(set_tx.frame, frame, len);
-    set_tx.len = len;
-    set_start();
-  } else {
-    memcpy(set_tx.queued_frame, frame, len);   // the newest command wins
-    set_tx.queued_len = len;
-    set_tx.queued = true;
-  }
+  if (gang >= H2_SWITCH_GANG_COUNT) return;
+  set_pending[gang] = true;
+  if (link_stats.sent < 255) link_stats.sent++;
+  if (set_tx.phase == SET_IDLE) set_start_next();
 }
 
 static void set_finish(bool acked, uint8_t status)
@@ -221,6 +228,12 @@ static void set_service(void)
       break;
     case SET_LEAD:
       if (ms_since(set_tx.phase_since) >= SET_LEAD_MS) {
+        // Build the frame now, from the state wanted now; anything set after this point
+        // marks the gang pending again.
+        uint8_t payload[24];
+        set_pending[set_tx.gang] = false;
+        uint8_t n = relay_set_payload(set_tx.gang, payload);
+        set_tx.len = build_frame(set_tx.frame, RELAY_TYPE, RELAY_CMD_SET, seq++, payload, n);
         set_tx.tries = 1;
         set_tx.phase = SET_WAIT;
         set_tx.phase_since = sl_sleeptimer_get_tick_count();
@@ -242,23 +255,10 @@ static void set_service(void)
       if (ms_since(set_tx.started) >= SET_HOLD_MS) {
         GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
         set_tx.phase = SET_IDLE;
-        if (set_tx.queued) {
-          set_tx.queued = false;
-          memcpy(set_tx.frame, set_tx.queued_frame, set_tx.queued_len);
-          set_tx.len = set_tx.queued_len;
-          set_start();
-        }
+        set_start_next();
       }
       break;
   }
-}
-
-static void relay_send_confirmed(const uint8_t *payload, uint8_t payload_len)
-{
-  uint8_t buf[FRAME_MAX];
-  uint8_t total = build_frame(buf, RELAY_TYPE, RELAY_CMD_SET, seq++, payload, payload_len);
-  if (link_stats.sent < 255) link_stats.sent++;
-  set_submit(buf, total);
 }
 
 void h2_relay_note_protection(uint16_t entry_id, uint32_t value)
@@ -291,18 +291,6 @@ bool h2_relay_attr_get(uint16_t attr_id, uint32_t *value)
     default:
       return false;
   }
-}
-
-static void relay_send_set(uint8_t gang, h2_relay_state_t state)
-{
-  // Payload format: [cmd_hi=0x01, cmd_lo=gang, marker=0x55, value]
-  // cmd 0x0100 = gang 0 relay, cmd 0x0101 = gang 1 relay
-  uint8_t payload[4];
-  payload[0] = 0x01;      // cmd_hi: relay control
-  payload[1] = gang;      // cmd_lo: gang index (0-based)
-  payload[2] = 0x55;      // data_type marker
-  payload[3] = (state == H2_RELAY_ON) ? 0x01 : 0x00;
-  relay_send_confirmed(payload, sizeof(payload));
 }
 
 // ---------------------------------------------------------------------------
@@ -651,25 +639,19 @@ void h2_relay_init(void)
   uart_rx_start();
 }
 
-void h2_relay_set(uint8_t gang, h2_relay_state_t state)
+// Payload of the relay command for a gang, from the state wanted now.
+static uint8_t relay_set_payload(uint8_t gang, uint8_t *payload)
 {
-  if (gang >= h2_active_gang_count) {
-    return;
-  }
-  relay_state[gang] = state;
+  h2_relay_state_t state = relay_state[gang];
+  // Entry 1: output on/off (cmd_id 0x0100 + gang, marker 0x55, 1-byte state)
+  payload[0] = 0x01;
+  payload[1] = gang;
+  payload[2] = 0x55;
+  payload[3] = (state == H2_RELAY_ON) ? 0x01 : 0x00;
 #if H2_HAS_DIMMER
-  // Dimmer uses INIT_QUERY_3 format: gang query + level + transition
-  // The gang query entry (0x0100) is required for the wall module to
-  // actually enable/disable the triac output.
-  uint8_t phase = (state == H2_RELAY_ON)
-    ? brightness_curve(dimmer_level[gang])
-    : 0x00;  // level 0 = off
-  uint8_t payload[18];
-  // Entry 1: gang query (cmd_id 0x0100, marker 0x55, 1-byte state)
-  payload[0]  = 0x01;
-  payload[1]  = gang;
-  payload[2]  = 0x55;
-  payload[3]  = (state == H2_RELAY_ON) ? 0x01 : 0x00;
+  // The dimmer's wall module needs the output entry together with level and transition
+  // to enable or disable the triac output.
+  uint8_t phase = (state == H2_RELAY_ON) ? brightness_curve(dimmer_level[gang]) : 0x00;
   // Entry 2: level (cmd_id 0x001A, marker 0x80, 4-byte BE)
   payload[4]  = 0x00; payload[5]  = 0x1A; payload[6]  = 0x80;
   payload[7]  = 0x00; payload[8]  = 0x00; payload[9]  = 0x00; payload[10] = phase;
@@ -679,10 +661,19 @@ void h2_relay_set(uint8_t gang, h2_relay_state_t state)
   payload[15] = (uint8_t)(on_off_transition_ms >> 16);
   payload[16] = (uint8_t)(on_off_transition_ms >> 8);
   payload[17] = (uint8_t)(on_off_transition_ms);
-  relay_send_confirmed(payload, sizeof(payload));
+  return 18;
 #else
-  relay_send_set(gang, state);
+  return 4;
 #endif
+}
+
+void h2_relay_set(uint8_t gang, h2_relay_state_t state)
+{
+  if (gang >= h2_active_gang_count) {
+    return;
+  }
+  relay_state[gang] = state;
+  relay_send_confirmed(gang);
 }
 
 h2_relay_state_t h2_relay_get(uint8_t gang)
