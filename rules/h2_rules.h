@@ -29,12 +29,16 @@ struct h2_event {
   u8  type;        // H2_EV_*
   s32 value;       // knob steps (signed), timer id, ...
   u32 millis;      // time since boot
+  u16 cluster;     // H2_EV_REPORT: the cluster and attribute that was reported
+  u16 attr;
 };
 
 #define H2_SRC_BUTTON(n)   (n)        // buttons 0..7 (the dimmer's knob button is 0)
 #define H2_SRC_KNOB        16
 #define H2_SRC_TIMER       32
 #define H2_SRC_SYSTEM      48
+#define H2_SRC_REMOTE(n)   (64 + (n)) // another device, n = 0..7 in order of first report
+#define H2_IS_REMOTE(s)    ((s) >= 64 && (s) < 72)
 
 #define H2_EV_PRESS         1         // went down
 #define H2_EV_RELEASE       2         // came up
@@ -50,6 +54,8 @@ struct h2_event {
 #define H2_EV_VAR          12         // source H2_SRC_SYSTEM: a public variable was written
                                       // from outside; value = its index (read it with var_get)
 #define H2_EV_TRIGGER      13         // source H2_SRC_SYSTEM: a trigger arrived; value = its number
+#define H2_EV_REPORT       14         // source H2_SRC_REMOTE(n): that device's attribute
+                                      // ev->cluster / ev->attr now has the value ev->value
 
 // ---- host functions ----------------------------------------------------------------------
 #define H2_FN(id, ret, name, ...) static ret (*name)(__VA_ARGS__) = (void *)id
@@ -65,6 +71,16 @@ struct h2_event {
 // 0xFFB0 raises H2_EV_TRIGGER. Radio messages sent while handling these two events come
 // from a small allowance (about 4 per 10 s); use them to update state and LEDs, not to
 // send commands.
+// State of other devices. A lamp bound to this switch (its On/Off, Level or Colour
+// cluster bound to the switch) reports its changes here; group_read() asks all members of
+// a group for a value. Name the attributes of interest with watch() on H2_EV_BOOT (at
+// most 4); each change then arrives as H2_EV_REPORT, only when the value differs from the
+// last one delivered, and at most every 250 ms per device and attribute. Treat a report
+// as news about the state: update variables and LEDs. Radio messages sent while handling
+// one come from the same small allowance as for H2_EV_VAR.
+H2_FN(15, long, watch,        long cluster, long attr);
+H2_FN(16, long, group_read,   long group, long cluster, long attr);
+
 H2_FN(14, long, var_public,   long mask);                              // bit n = variable n is public
 H2_FN( 1, long, relay_set,    long gang, long mode);                  // H2_OFF / H2_ON / H2_TOGGLE
 H2_FN( 2, long, relay_get,    long gang);                             // 1 if on

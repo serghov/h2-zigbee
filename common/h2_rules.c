@@ -31,6 +31,8 @@ typedef struct {
   uint8_t  type;
   int32_t  value;
   uint32_t millis;
+  uint16_t cluster;     // H2_RULES_EV_REPORT: which attribute of the other device
+  uint16_t attr;
 } rules_event_t;
 
 static uint8_t code[H2_RULES_MAX_BYTES];
@@ -66,6 +68,26 @@ static bool in_reaction;               // the running event came from outside, n
 static uint8_t reaction_tokens = REACTION_TOKENS;
 static uint32_t reaction_refill_tick;
 static uint32_t stat_dropped;          // messages and outside events dropped by the limits
+
+// State other devices report to this one (h2_rules.h). One slot per device and watched
+// attribute holds the newest value, so memory is fixed and a burst of reports collapses
+// into the latest value.
+#define PEERS                 8
+#define WATCHES               4
+#define REMOTE_MIN_GAP_MS     250      // per slot: at most one event this often
+
+static struct { uint16_t cluster, attr; } watches[WATCHES];
+static uint8_t watch_count;
+static uint16_t peer_node[PEERS];      // short address; 0xFFFF = free
+static uint8_t peer_count;
+static struct {
+  int32_t  value;
+  uint32_t delivered_at;
+  bool     known;                      // a value has been delivered to the program
+  bool     dirty;                      // a newer value is waiting
+  int32_t  pending;
+} remote_slot[PEERS][WATCHES];
+static sl_zigbee_af_event_t remote_event;
 static uint32_t stat_events, stat_handled, stat_faults;
 static bool safe;                 // safe mode: programs can be uploaded but do not run
 static uint8_t upload_result;     // result of the last commit
@@ -220,6 +242,33 @@ static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *o
     case 12:  // log_value(tag, value)
       sl_zigbee_app_debug_println("Rules: log %ld = %ld", (long)a[0], (long)a[1]);
       return 0;
+    case 15:  // watch(cluster, attribute)
+      for (uint8_t i = 0; i < watch_count; i++) {
+        if (watches[i].cluster == (uint16_t)a[0] && watches[i].attr == (uint16_t)a[1]) return i;
+      }
+      if (watch_count >= WATCHES) return (uint64_t)-1;
+      watches[watch_count].cluster = (uint16_t)a[0];
+      watches[watch_count].attr = (uint16_t)a[1];
+      return watch_count++;
+    case 16: { // group_read(group, cluster, attribute): members answer with their value
+      if (messages_left == 0 || sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
+        return (uint64_t)-1;
+      }
+      messages_left--;
+      uint8_t msg[5] = { ZCL_GLOBAL_COMMAND | ZCL_FRAME_CONTROL_CLIENT_TO_SERVER
+                         | ZCL_DISABLE_DEFAULT_RESPONSE_MASK,
+                         sl_zigbee_af_next_sequence(), 0x00 /* Read Attributes */,
+                         (uint8_t)a[2], (uint8_t)(a[2] >> 8) };
+      sl_zigbee_aps_frame_t aps;
+      memset(&aps, 0, sizeof(aps));
+      aps.profileId = 0x0104;
+      aps.clusterId = (uint16_t)a[1];
+      aps.sourceEndpoint = h2_rules_host_source_endpoint();
+      aps.destinationEndpoint = 0xFF;
+      aps.options = SL_ZIGBEE_APS_OPTION_ENABLE_ROUTE_DISCOVERY;
+      return sl_zigbee_af_send_multicast((uint16_t)a[0], SL_ZIGBEE_NULL_NODE_ID, 0, &aps,
+                                         sizeof(msg), msg) == SL_STATUS_OK ? 0 : (uint64_t)-1;
+    }
     case 14:  // var_public(mask)
       public_mask = (uint16_t)a[0];
       dirty_mask &= public_mask;
@@ -243,7 +292,14 @@ bool h2_rules_active(void)
   return active;
 }
 
+static bool run_event(uint8_t source, uint8_t type, int32_t value, uint16_t cluster, uint16_t attr);
+
 bool h2_rules_event(uint8_t source, uint8_t type, int32_t value)
+{
+  return run_event(source, type, value, 0, 0);
+}
+
+static bool run_event(uint8_t source, uint8_t type, int32_t value, uint16_t cluster, uint16_t attr)
 {
   if (!active || running) return false;
 
@@ -252,6 +308,8 @@ bool h2_rules_event(uint8_t source, uint8_t type, int32_t value)
   ev.source = source;
   ev.type = type;
   ev.value = value;
+  ev.cluster = cluster;
+  ev.attr = attr;
   ev.millis = halCommonGetInt32uMillisecondTick();
 
   h2_bpf_region_t region = { (const uint8_t *)&ev, sizeof(ev), false };
@@ -263,8 +321,9 @@ bool h2_rules_event(uint8_t source, uint8_t type, int32_t value)
   vm.budget = BUDGET_INSTRUCTIONS;
 
   running = true;
-  in_reaction = (source == H2_RULES_SRC_SYSTEM
-                 && (type == H2_RULES_EV_VAR || type == H2_RULES_EV_TRIGGER));
+  in_reaction = (type == H2_RULES_EV_REPORT)
+                || (source == H2_RULES_SRC_SYSTEM
+                    && (type == H2_RULES_EV_VAR || type == H2_RULES_EV_TRIGGER));
   messages_left = BUDGET_MESSAGES;
   actions_left = BUDGET_ACTIONS;
   uint64_t result = 0;
@@ -357,6 +416,112 @@ static void ext_post(uint8_t type, int32_t value)
   sl_zigbee_af_event_set_active(&ext_event);
 }
 
+// ---------------------------------------------------------------------------
+// Reports from other devices
+// ---------------------------------------------------------------------------
+
+// Hand waiting values to the program: at most one per pass, each slot rate-limited.
+static void remote_handler(sl_zigbee_af_event_t *event)
+{
+  sl_zigbee_af_event_set_inactive(event);
+  if (!active) return;
+  uint32_t now = halCommonGetInt32uMillisecondTick();
+  uint32_t soonest = 0xFFFFFFFF;
+  bool delivered = false;
+  for (uint8_t p = 0; p < peer_count; p++) {
+    for (uint8_t w = 0; w < watch_count; w++) {
+      if (!remote_slot[p][w].dirty) continue;
+      uint32_t since = now - remote_slot[p][w].delivered_at;
+      if (remote_slot[p][w].known && since < REMOTE_MIN_GAP_MS) {
+        if (REMOTE_MIN_GAP_MS - since < soonest) soonest = REMOTE_MIN_GAP_MS - since;
+        continue;
+      }
+      if (delivered) {              // one event per pass; come back for the next
+        soonest = 0;
+        continue;
+      }
+      remote_slot[p][w].dirty = false;
+      remote_slot[p][w].known = true;
+      remote_slot[p][w].value = remote_slot[p][w].pending;
+      remote_slot[p][w].delivered_at = now;
+      delivered = true;
+      (void)run_event((uint8_t)(H2_RULES_SRC_REMOTE0 + p), H2_RULES_EV_REPORT,
+                      remote_slot[p][w].value, watches[w].cluster, watches[w].attr);
+    }
+  }
+  if (soonest != 0xFFFFFFFF) {
+    sl_zigbee_af_event_set_delay_ms(&remote_event, soonest ? soonest : 1);
+  }
+}
+
+static void remote_value(uint16_t node, uint16_t cluster, uint16_t attr, int32_t value)
+{
+  uint8_t w, p;
+  for (w = 0; w < watch_count; w++) {
+    if (watches[w].cluster == cluster && watches[w].attr == attr) break;
+  }
+  if (w == watch_count) return;       // the program did not ask for this attribute
+  for (p = 0; p < peer_count; p++) {
+    if (peer_node[p] == node) break;
+  }
+  if (p == peer_count) {
+    if (peer_count >= PEERS) {
+      stat_dropped++;
+      return;
+    }
+    peer_node[peer_count++] = node;
+  }
+  // Change-only: a value the program already has, with nothing newer waiting, is dropped.
+  if (remote_slot[p][w].known && !remote_slot[p][w].dirty && remote_slot[p][w].value == value) return;
+  remote_slot[p][w].pending = value;
+  remote_slot[p][w].dirty = true;
+  if (!sl_zigbee_af_event_is_scheduled(&remote_event)) sl_zigbee_af_event_set_active(&remote_event);
+}
+
+// Size in bytes of the ZCL data types a program can receive as a number; 0 = not handled.
+static uint8_t zcl_int_size(uint8_t type, bool *is_signed)
+{
+  *is_signed = false;
+  switch (type) {
+    case 0x10: case 0x18: case 0x20: case 0x30: return 1;   // bool, bitmap8, uint8, enum8
+    case 0x19: case 0x21: case 0x31: return 2;              // bitmap16, uint16, enum16
+    case 0x22: return 3;
+    case 0x1B: case 0x23: return 4;
+    case 0x28: *is_signed = true; return 1;
+    case 0x29: *is_signed = true; return 2;
+    case 0x2B: *is_signed = true; return 4;
+    default:   return 0;
+  }
+}
+
+void h2_rules_incoming(uint16_t source_node, uint16_t cluster, const uint8_t *msg, uint16_t len)
+{
+  if (!active || watch_count == 0 || len < 3) return;
+  uint8_t fc = msg[0];
+  if ((fc & 0x03) != 0x00 || (fc & 0x04)) return;       // global, not manufacturer-specific
+  uint8_t cmd = msg[2];
+  if (cmd != 0x0A && cmd != 0x01) return;               // Report Attributes, Read Attributes Response
+  if (source_node == sl_zigbee_af_get_node_id()) return;
+
+  uint16_t off = 3;
+  while (off + 3 <= len) {
+    uint16_t attr = (uint16_t)(msg[off] | ((uint16_t)msg[off + 1] << 8));
+    off += 2;
+    if (cmd == 0x01) {                                  // read response carries a status first
+      if (msg[off++] != 0x00) continue;                 // unsupported attribute: no type, no value
+      if (off >= len) break;
+    }
+    bool is_signed;
+    uint8_t size = zcl_int_size(msg[off++], &is_signed);
+    if (size == 0 || off + size > len) break;           // a type we cannot step over: stop
+    uint32_t raw = 0;
+    for (uint8_t i = 0; i < size; i++) raw |= (uint32_t)msg[off + i] << (8 * i);
+    off += size;
+    if (is_signed && size < 4 && (raw & (1UL << (8 * size - 1)))) raw |= 0xFFFFFFFFUL << (8 * size);
+    remote_value(source_node, cluster, attr, (int32_t)raw);
+  }
+}
+
 static void boot_handler(sl_zigbee_af_event_t *event)
 {
   sl_zigbee_af_event_set_inactive(event);
@@ -373,6 +538,9 @@ static void stop_program(void)
   public_mask = 0;
   dirty_mask = 0;
   ext_count = 0;
+  watch_count = 0;
+  peer_count = 0;
+  memset(remote_slot, 0, sizeof(remote_slot));
   for (uint8_t b = 0; b < 8; b++) {
     h2_rules_host_max_clicks(b, 1, false);   // gesture settings belong to the program
   }
@@ -508,6 +676,7 @@ void h2_rules_init(bool safe_mode)
   sl_zigbee_af_event_init(&boot_event, boot_handler);
   sl_zigbee_af_event_init(&report_event, report_handler);
   sl_zigbee_af_event_init(&ext_event, ext_handler);
+  sl_zigbee_af_event_init(&remote_event, remote_handler);
 
   if (safe_mode) {
     safe = true;

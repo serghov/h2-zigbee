@@ -32,6 +32,7 @@
 #define H2_RULES_SRC_KNOB       16
 #define H2_RULES_SRC_TIMER      32
 #define H2_RULES_SRC_SYSTEM     48
+#define H2_RULES_SRC_REMOTE0    64      // 64..71: another device, numbered in order of first report
 
 #define H2_RULES_EV_PRESS         1
 #define H2_RULES_EV_RELEASE       2
@@ -46,6 +47,7 @@
 #define H2_RULES_EV_ROTATE_PRESSED 11
 #define H2_RULES_EV_VAR          12     // a public variable was written from outside; value = index
 #define H2_RULES_EV_TRIGGER      13     // a trigger was written from outside; value = its number
+#define H2_RULES_EV_REPORT       14     // another device reported an attribute the program watches
 
 // Call once from sl_zigbee_af_main_init_cb(). Pass true in safe mode: rules stay off.
 void h2_rules_init(bool safe_mode);
@@ -110,6 +112,15 @@ void h2_rules_print_info(void);
 #define H2_RULES_OP_ERASE       3
 
 bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value);
+
+// Every incoming ZCL message, for the reports of other devices. Call from the variant's
+// pre-message callback (not in safe mode); it never consumes the message.
+//
+// A device that is bound to this one, or that answers a group_read, sends attribute
+// values here. The program names the attributes it wants (watch); for those, the newest
+// value per device is kept and handed to the program as H2_RULES_EV_REPORT: only when it
+// changed, and at most every 250 ms per device and attribute.
+void h2_rules_incoming(uint16_t source_node, uint16_t cluster, const uint8_t *msg, uint16_t len);
 // Returns false when the attribute is not one of the above; otherwise *ok says whether
 // the write was accepted.
 bool h2_rules_attr_write(uint16_t attr_id, uint8_t zcl_type, const uint8_t *data,

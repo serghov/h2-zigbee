@@ -32,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000080  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000081  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -991,6 +991,9 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
            && h2_opple_handle_safe_message(msg->apsFrame->destinationEndpoint, msg->source,
                                            msg->message, msg->msgLen);
   }
+
+  // Reports and read responses from other devices, for the rule program
+  h2_rules_incoming(msg->source, msg->apsFrame->clusterId, msg->message, msg->msgLen);
 
   // Handle Opple cluster (0xFCC0)
   if (msg->apsFrame->clusterId == OPPLE_CLUSTER_ID) {
