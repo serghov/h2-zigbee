@@ -23,7 +23,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define H2_RULES_MAX_BYTES      2048       // 256 instructions
+#define H2_RULES_MAX_BYTES     4096       // 512 instructions
 #define H2_RULES_VARS           16
 #define H2_RULES_TIMERS         4
 

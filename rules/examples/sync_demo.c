@@ -11,7 +11,7 @@
 #define VAR_ANY_ON  0                  // public: 1 while at least one lamp is on
 #define VAR_ON_MASK 1                  // private: bit n = lamp n is on
 
-static inline void show(void)
+H2_INLINE void show(void)
 {
   long any = var_get(VAR_ON_MASK) != 0;
   var_set(VAR_ANY_ON, any);            // reported to the hub when it changes

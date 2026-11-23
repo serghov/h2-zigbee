@@ -9,7 +9,7 @@
 #define VAR_MODE      0
 #define VAR_TRIGGERS  1
 
-static inline void show(long mode)
+H2_INLINE void show(long mode)
 {
   if (mode == 1)      led_set(0, 255, 0);
   else if (mode == 2) led_set(0, 0, 255);

@@ -27,7 +27,7 @@
 #define VAR_BULB     1                // 1 while the bulb is on
 
 // On at once: Level Control, Move to Level with On/Off, transition time 0.
-static inline void bulb_on(void)
+H2_INLINE void bulb_on(void)
 {
   u8 p[3];
   p[0] = BRIGHTNESS;
@@ -39,7 +39,7 @@ static inline void bulb_on(void)
 
 // Off at once: On/Off cluster, Off with Effect, effect 0 variant 1 = no fade. The bulb
 // keeps its brightness for whoever turns it on next.
-static inline void bulb_off(void)
+H2_INLINE void bulb_off(void)
 {
   u8 p[2];
   p[0] = 0;
@@ -50,7 +50,7 @@ static inline void bulb_off(void)
 
 // Colour Control cluster, Move to Colour Temperature: mireds, then transition time in
 // tenths of a second, both 16 bit, low byte first.
-static inline void bulb_colour(long mireds)
+H2_INLINE void bulb_colour(long mireds)
 {
   u8 p[4];
   p[0] = (u8)(mireds & 0xFF);
@@ -65,12 +65,12 @@ static inline void bulb_colour(long mireds)
 #define MODE_RED   255
 #define MODE_BLUE  255                // red + blue = purple
 
-static inline void show_mode(long led, long on)
+H2_INLINE void show_mode(long led, long on)
 {
   led_set(led, on ? MODE_RED : 0, on ? MODE_BLUE : 0);
 }
 
-static inline void show_modes(void)
+H2_INLINE void show_modes(void)
 {
   show_mode(LED_UPPER, relay_get(0) && var_get(VAR_BULB));
   show_mode(LED_LOWER, var_get(VAR_WARM));
