@@ -120,7 +120,13 @@ bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value);
 // values here. The program names the attributes it wants (watch); for those, the newest
 // value per device is kept and handed to the program as H2_RULES_EV_REPORT: only when it
 // changed, and at most every 250 ms per device and attribute.
-void h2_rules_incoming(uint16_t source_node, uint16_t cluster, const uint8_t *msg, uint16_t len);
+//
+// A device that answers a group_read is asked, once, to report the watched clusters to
+// this device from then on (ZDO bind to endpoint H2_RULES_REPORT_ENDPOINT), so no binding
+// has to be set up on the hub.
+#define H2_RULES_REPORT_ENDPOINT  11
+void h2_rules_incoming(uint16_t source_node, uint8_t source_endpoint, uint16_t cluster,
+                       const uint8_t *msg, uint16_t len);
 // Returns false when the attribute is not one of the above; otherwise *ok says whether
 // the write was accepted.
 bool h2_rules_attr_write(uint16_t attr_id, uint8_t zcl_type, const uint8_t *data,

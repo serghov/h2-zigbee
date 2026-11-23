@@ -71,9 +71,10 @@ struct h2_event {
 // 0xFFB0 raises H2_EV_TRIGGER. Radio messages sent while handling these two events come
 // from a small allowance (about 4 per 10 s); use them to update state and LEDs, not to
 // send commands.
-// State of other devices. A lamp bound to this switch (its On/Off, Level or Colour
-// cluster bound to the switch) reports its changes here; group_read() asks all members of
-// a group for a value. Name the attributes of interest with watch() on H2_EV_BOOT (at
+// State of other devices. group_read() asks all members of a group for a value. Each
+// device that answers is also asked, by the firmware, to report the watched attributes
+// to this switch from then on, so the lamps keep the switch informed whoever switches
+// them. Nothing has to be bound on the hub. Name the attributes of interest with watch() on H2_EV_BOOT (at
 // most 4); each change then arrives as H2_EV_REPORT, only when the value differs from the
 // last one delivered, and at most every 250 ms per device and attribute. Treat a report
 // as news about the state: update variables and LEDs. Radio messages sent while handling
