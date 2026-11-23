@@ -39,6 +39,11 @@ def _attr(attr_id, attr_type, access="rw"):
     return ZCLAttributeDef(id=attr_id, type=attr_type, access=access, is_manufacturer_specific=True)
 
 
+def _is_demand_entity(entity):
+    """The metering cluster's "instantaneous demand" sensor duplicates the power sensor."""
+    return not str(getattr(entity, "unique_id", "")).endswith("summation_delivered")
+
+
 class H2ElectricalMeasurement(ElectricalMeasurementCluster):
     """Local electrical measurement: power in 0.1 W, current in mA, voltage in V."""
 
@@ -131,6 +136,7 @@ class H2Cluster(XiaomiAqaraE1Cluster):
     .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="apparent_power")
     .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="ac_frequency")
     .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="power_factor")
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0702, function=_is_demand_entity)
     .add_to_registry()
 )
 
@@ -145,6 +151,7 @@ class H2Cluster(XiaomiAqaraE1Cluster):
     .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="apparent_power")
     .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="ac_frequency")
     .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="power_factor")
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0702, function=_is_demand_entity)
     .prevent_default_entity_creation(endpoint_id=1, cluster_id=0x0B04, unique_id_suffix="rms_voltage")
     .add_to_registry()
 )
