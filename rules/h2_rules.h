@@ -12,15 +12,16 @@
 // gang * 2 + side (0 = up, 1 = down); a double click always follows a single click, and
 // triple clicks and max_clicks() do not apply. See examples/switch_demo.c.
 //
-// Restrictions of the firmware's interpreter: no global variables, no string literals,
-// no function calls other than the host functions below and H2_INLINE functions.
-// Keep state with var_get()/var_set().
+// What the firmware's interpreter provides: functions of the file calling each other
+// (up to five calls deep, 128 bytes of stack per call), and constant data ('static const'
+// tables and strings). Not provided: writable global variables. Keep state with
+// var_get()/var_set().
 #ifndef H2_RULES_H
 #define H2_RULES_H
 
-// Helper functions in rule files and headers must be H2_INLINE: the interpreter has no
-// calls between program functions, so everything has to end up inside on_event().
-#define H2_INLINE static inline __attribute__((always_inline))
+// Marks the helper functions of rule files and headers. The compiler is free to keep a
+// helper as a real function and call it; nothing forces inlining any more.
+#define H2_INLINE static inline
 
 typedef unsigned char  u8;
 typedef unsigned short u16;

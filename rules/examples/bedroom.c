@@ -22,10 +22,12 @@
 #define MODE_OFF     0
 #define MODE_DAY     1
 #define MODE_NIGHT   2
-#define DAY_LEVEL    PERCENT(100)
-#define DAY_COLOUR   KELVIN(4000)
-#define NIGHT_LEVEL  PERCENT(60)
-#define NIGHT_COLOUR KELVIN(2200)
+
+// What each mode means for the bulbs. Brightness 1..254, colour temperature in mireds.
+static const struct { u8 level; u16 mireds; } MODES[] = {
+  [MODE_DAY]   = { PERCENT(100), KELVIN(4000) },
+  [MODE_NIGHT] = { PERCENT(60),  KELVIN(2200) },
+};
 #define DAY_IF_BELOW KELVIN(3000)     // a reported colour cooler than this counts as Day
 
 #define VAR_MODE     0                // public
@@ -59,9 +61,8 @@ H2_INLINE void set_mode(long mode)
 
 H2_INLINE void command(long mode)
 {
-  if (mode == MODE_DAY)        lights_on(GROUP, DAY_LEVEL, DAY_COLOUR);
-  else if (mode == MODE_NIGHT) lights_on(GROUP, NIGHT_LEVEL, NIGHT_COLOUR);
-  else                         lights_off(GROUP);
+  if (mode == MODE_DAY || mode == MODE_NIGHT) lights_on(GROUP, MODES[mode].level, MODES[mode].mireds);
+  else                                        lights_off(GROUP);
 }
 
 H2_INLINE long mode_of_colour(void)

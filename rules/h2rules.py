@@ -3,11 +3,12 @@
 
 usage: h2rules.py rules.c [-o rules.bpf]
 
-The blob is the raw .text section: eBPF instructions, entry at offset 0.
-Programs with relocations (global variables, string literals, calls to non-inlined
-functions) are rejected, because the firmware's interpreter has no loader for them.
+The blob is the program image the firmware loads: the eBPF instructions (entry at offset
+0), and, if the file uses constant tables or strings, a header in front and the constant
+data behind (see common/h2_bpf.h). Functions of the file may call each other. Writable
+global variables are rejected: state lives in var_get/var_set.
 """
-import argparse, os, subprocess, sys, tempfile
+import argparse, os, struct, subprocess, sys, tempfile
 
 MAX_BYTES = 4096      # H2_RULES_MAX_BYTES in common/h2_rules.h
 
@@ -17,33 +18,106 @@ def run(*cmd):
         sys.exit(f"{' '.join(cmd)}\n{r.stdout}{r.stderr}")
     return r.stdout
 
+# ---- minimal ELF64 reader (little-endian object files from clang -target bpf) ----------
+
+SHT_PROGBITS, SHT_SYMTAB, SHT_NOBITS, SHT_REL = 1, 2, 8, 9
+SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR = 1, 2, 4
+R_BPF_64_64, R_BPF_64_32 = 1, 10
+
+def read_elf(path):
+    b = open(path, "rb").read()
+    if b[:6] != b"\x7fELF\x02\x01":
+        sys.exit("unexpected object file format")
+    shoff, = struct.unpack_from("<Q", b, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", b, 0x3A)
+    secs = []
+    for i in range(shnum):
+        name, typ, flags, addr, off, size, link, info, align, entsize = struct.unpack_from(
+            "<IIQQQQIIQQ", b, shoff + i * shentsize)
+        secs.append(dict(name=name, type=typ, flags=flags, off=off, size=size, link=link,
+                         info=info, align=align or 1, entsize=entsize,
+                         data=b"" if typ == SHT_NOBITS else b[off:off + size]))
+    strtab = secs[shstrndx]["data"]
+    def cstr(tab, o):
+        return tab[o:tab.index(b"\0", o)].decode()
+    for sec in secs:
+        sec["name"] = cstr(strtab, sec["name"])
+    syms = []
+    for sec in secs:
+        if sec["type"] == SHT_SYMTAB:
+            names = secs[sec["link"]]["data"]
+            for o in range(0, sec["size"], 24):
+                n, info, other, shndx, value, size = struct.unpack_from("<IBBHQQ", sec["data"], o)
+                syms.append(dict(name=cstr(names, n), shndx=shndx, value=value, type=info & 15))
+    return secs, syms
+
 def compile_rules(src, out):
     with tempfile.TemporaryDirectory() as tmp:
         obj = os.path.join(tmp, "rules.o")
-        run("clang", "-target", "bpf", "-mcpu=v4", "-O2", "-Wall", "-Wno-unused-variable",
-            "-fno-jump-tables", "-c", src, "-o", obj)
-        relocs = [l for l in run("llvm-readelf", "-r", obj).splitlines() if l.startswith("0")]
-        if relocs:
-            sys.exit("rule program needs relocations, which the firmware cannot resolve.\n"
-                     "Avoid global variables, string literals, constant arrays and functions that are\n"
-                     "not H2_INLINE (use var_get/var_set for state):\n" + "\n".join(relocs))
-        syms = run("llvm-readelf", "-s", obj)
-        entry = [l.split() for l in syms.splitlines() if l.rstrip().endswith(" on_event")]
-        if not entry or int(entry[0][1], 16) != 0:
-            sys.exit("on_event() must exist and be the first function in the file")
-        run("llvm-objcopy", "-O", "binary", "--only-section=.text", obj, out)
-    size = os.path.getsize(out)
-    if size == 0 or size % 8:
-        sys.exit(f"unexpected code size {size}")
-    code = open(out, "rb").read()
-    for i in range(0, size, 8):
-        # opcode 0x85 with source register 1 is a call to another function of the program
-        if code[i] == 0x85 and (code[i + 1] >> 4) == 1:
-            sys.exit(f"instruction {i // 8} calls another function of the program, which the firmware\n"
-                     "cannot run. Declare every helper function H2_INLINE (see h2_rules.h).")
-    if size > MAX_BYTES:
-        sys.exit(f"program is {size} bytes; the firmware accepts at most {MAX_BYTES}")
-    return size
+        run("clang", "-target", "bpf", "-mcpu=v4", "-Oz", "-Wall", "-Wno-unused-variable",
+            "-Wno-unused-function", "-fno-jump-tables", "-c", src, "-o", obj)
+        secs, syms = read_elf(obj)
+
+    text_idx = next((i for i, x in enumerate(secs) if x["name"] == ".text"), None)
+    if text_idx is None or not secs[text_idx]["size"]:
+        sys.exit("no code in the rule file")
+    text = bytearray(secs[text_idx]["data"])
+    if len(text) % 8:
+        sys.exit(f"unexpected code size {len(text)}")
+    entry = [x for x in syms if x["name"] == "on_event" and x["shndx"] == text_idx]
+    if not entry or entry[0]["value"] != 0:
+        sys.exit("on_event() must exist and be the first function in the file")
+
+    # Constant data: every read-only data section, laid out one after another.
+    data = bytearray()
+    base = {}
+    for i, sec in enumerate(secs):
+        if not (sec["flags"] & SHF_ALLOC) or (sec["flags"] & SHF_EXECINSTR) or not sec["size"]:
+            continue
+        if (sec["flags"] & SHF_WRITE) or sec["type"] == SHT_NOBITS:
+            sys.exit(f"the rule file has writable global data (section {sec['name']}), which the\n"
+                     "firmware does not provide. Use 'static const' for tables and var_get/var_set\n"
+                     "for state.")
+        if sec["type"] != SHT_PROGBITS:
+            continue
+        while len(data) % sec["align"]:
+            data.append(0)
+        base[i] = len(data)
+        data += sec["data"]
+
+    # Relocations in the code: addresses of constant data, and calls the compiler left open.
+    for sec in secs:
+        if sec["type"] != SHT_REL or sec["info"] != text_idx:
+            continue
+        for o in range(0, sec["size"], 16):
+            r_off, r_info = struct.unpack_from("<QQ", sec["data"], o)
+            sym, rtype = syms[r_info >> 32], r_info & 0xFFFFFFFF
+            insn = r_off // 8
+            imm, = struct.unpack_from("<i", text, r_off + 4)
+            if rtype == R_BPF_64_64 and sym["shndx"] in base and text[r_off] == 0x18:
+                target = base[sym["shndx"]] + sym["value"] + imm
+                if not 0 <= target < len(data):
+                    sys.exit(f"instruction {insn}: constant data reference out of range")
+                text[r_off + 1] = (text[r_off + 1] & 0x0F) | (2 << 4)   # source 2: data offset
+                struct.pack_into("<i", text, r_off + 4, target)
+                struct.pack_into("<i", text, r_off + 12, 0)
+            elif rtype == R_BPF_64_32 and sym["shndx"] == text_idx and text[r_off] == 0x85:
+                target = sym["value"] // 8 + imm + 1
+                struct.pack_into("<i", text, r_off + 4, target - (insn + 1))
+            else:
+                sys.exit(f"instruction {insn}: reference to '{sym['name'] or secs[sym['shndx']]['name'] if sym['shndx'] < len(secs) else sym['name']}' "
+                         "cannot be resolved (only constant data and the file's own functions can be referenced)")
+
+    if data:
+        while len(data) % 8:              # the firmware takes images in whole 8-byte units
+            data.append(0)
+        image = bytes([0x00, 1]) + struct.pack("<HH", len(text) // 8, len(data)) + b"\0\0" + bytes(text) + bytes(data)
+    else:
+        image = bytes(text)               # bare instructions, as before
+    if len(image) > MAX_BYTES:
+        sys.exit(f"program is {len(image)} bytes; the firmware accepts at most {MAX_BYTES}")
+    open(out, "wb").write(image)
+    return len(image), len(text) // 8, len(data)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -51,5 +125,5 @@ if __name__ == "__main__":
     ap.add_argument("-o", "--output")
     a = ap.parse_args()
     out = a.output or os.path.splitext(a.source)[0] + ".bpf"
-    n = compile_rules(a.source, out)
-    print(f"{out}: {n} bytes, {n // 8} instructions")
+    size, insns, data = compile_rules(a.source, out)
+    print(f"{out}: {size} bytes, {insns} instructions" + (f", {data} bytes of constant data" if data else ""))

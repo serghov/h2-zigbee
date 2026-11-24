@@ -387,8 +387,12 @@ static bool run_event(uint8_t source, uint8_t type, int32_t value, uint16_t clus
   ev.millis = halCommonGetInt32uMillisecondTick();
 
   h2_bpf_region_t region = { (const uint8_t *)&ev, sizeof(ev), false };
-  vm.code = code;
-  vm.code_len = code_len;
+  h2_bpf_image_t image;
+  if (!h2_bpf_parse(code, code_len, &image)) return false;   // was checked when installed
+  vm.code = image.code;
+  vm.code_len = image.code_len;
+  vm.data = image.data;
+  vm.data_len = image.data_len;
   vm.regions = &region;
   vm.region_count = 1;
   vm.helper = helper;
@@ -752,6 +756,15 @@ static void stop_program(void)
 // Storage and upload
 // ---------------------------------------------------------------------------
 
+// An image is the instructions, optionally with a header and constant data (h2_bpf.h).
+static bool image_valid(const uint8_t *buf, uint16_t len, uint32_t *bad_pc)
+{
+  h2_bpf_image_t image;
+  if (bad_pc) *bad_pc = 0;
+  if (!h2_bpf_parse(buf, len, &image)) return false;
+  return h2_bpf_verify(image.code, image.code_len, image.data_len, bad_pc) == H2_BPF_OK;
+}
+
 static bool load_stored(void)
 {
   rules_header_t hdr;
@@ -767,7 +780,7 @@ static bool load_stored(void)
     }
   }
   if (crc16(code, hdr.length) != hdr.crc
-      || h2_bpf_verify(code, hdr.length, NULL) != H2_BPF_OK) {
+      || !image_valid(code, hdr.length, NULL)) {
     return false;
   }
   code_len = hdr.length;
@@ -826,7 +839,7 @@ static uint8_t commit(uint32_t *detail)
   if (detail) *detail = 0;
   if (staging_len == 0) return 1;
   if (staging_got != staging_len) return 2;
-  if (h2_bpf_verify(staging, staging_len, &bad_pc) != H2_BPF_OK) {
+  if (!image_valid(staging, staging_len, &bad_pc)) {
     if (detail) *detail = bad_pc;
     staging_len = 0;
     return 3;

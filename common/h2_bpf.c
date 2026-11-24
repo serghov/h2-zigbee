@@ -22,6 +22,8 @@ static inline int32_t IMM(const uint8_t *p)
 #define CLS_ALU64      0x07
 
 #define OP_LDDW        0x18
+#define LDDW_DATA      2          // lddw source field: imm is an offset into the constant data
+#define CALL_LOCAL     1          // call source field: imm is a relative instruction offset
 #define MODE_MEM       0x60
 #define MODE_MEMSX     0x80       // sign-extending load (v4)
 #define SRC_X          0x08
@@ -52,7 +54,28 @@ static bool alu_op_known(uint8_t op)
   return true;
 }
 
-h2_bpf_status_t h2_bpf_verify(const uint8_t *code, uint32_t code_len, uint32_t *bad_pc)
+bool h2_bpf_parse(const uint8_t *image, uint32_t image_len, h2_bpf_image_t *out)
+{
+  memset(out, 0, sizeof(*out));
+  if (image == NULL || image_len < 8) return false;
+  if (image[0] != 0x00) {                    // bare instruction stream
+    out->code = image;
+    out->code_len = image_len;
+    return (image_len & 7) == 0;
+  }
+  uint32_t insns = (uint32_t)image[2] | ((uint32_t)image[3] << 8);
+  uint32_t data = (uint32_t)image[4] | ((uint32_t)image[5] << 8);
+  if (image[1] != H2_BPF_IMAGE_VERSION || image[6] != 0 || image[7] != 0) return false;
+  if (insns == 0 || 8 + insns * 8 + data != image_len) return false;
+  out->code = image + 8;
+  out->code_len = insns * 8;
+  out->data = data ? image + 8 + insns * 8 : NULL;
+  out->data_len = data;
+  return true;
+}
+
+h2_bpf_status_t h2_bpf_verify(const uint8_t *code, uint32_t code_len, uint32_t data_len,
+                              uint32_t *bad_pc)
 {
   uint32_t n = code_len / 8;
   uint32_t pc = 0;
@@ -68,9 +91,12 @@ h2_bpf_status_t h2_bpf_verify(const uint8_t *code, uint32_t code_len, uint32_t *
 
     switch (CLS(op)) {
       case CLS_LD:
-        if (op != OP_LDDW || src != 0 || dst == 10) BAD();
+        if (op != OP_LDDW || (src != 0 && src != LDDW_DATA) || dst == 10) BAD();
         if (pc + 1 >= n) BAD();
         if (OPC(p + 8) != 0 || p[9] != 0 || OFF(p + 8) != 0) BAD();
+        if (src == LDDW_DATA) {                          // address of constant data
+          if (IMM(p + 8) != 0 || IMM(p) < 0 || (uint32_t)IMM(p) >= data_len) BAD();
+        }
         pc++;                                            // skip the second half
         break;
       case CLS_LDX:
@@ -102,7 +128,13 @@ h2_bpf_status_t h2_bpf_verify(const uint8_t *code, uint32_t code_len, uint32_t *
       case CLS_JMP32: {
         uint8_t jop = op >> 4;
         if (jop == 0x08) {                               // call
-          if (CLS(op) != CLS_JMP || (op & SRC_X) || src != 0) BAD();   // host helpers only
+          if (CLS(op) != CLS_JMP || (op & SRC_X)) BAD();
+          if (src == CALL_LOCAL) {                       // another function of the program
+            int64_t target = (int64_t)pc + 1 + IMM(p);
+            if (target < 0 || target >= (int64_t)n) BAD();
+          } else if (src != 0) {                         // 0 = host function by number
+            BAD();
+          }
         } else if (jop == 0x09) {                        // exit
           if (CLS(op) != CLS_JMP) BAD();
         } else if (jop <= 0x0D) {
@@ -122,8 +154,11 @@ h2_bpf_status_t h2_bpf_verify(const uint8_t *code, uint32_t code_len, uint32_t *
     const uint8_t *p = code + pc * 8;
     uint8_t op = OPC(p);
     if (op == OP_LDDW) { pc++; continue; }
-    if ((CLS(op) == CLS_JMP || CLS(op) == CLS_JMP32) && (op >> 4) != 0x08 && (op >> 4) != 0x09) {
-      uint32_t target = (uint32_t)jump_target(p, pc);
+    bool local_call = (op == 0x85 && SRC(p) == CALL_LOCAL);
+    if (local_call
+        || ((CLS(op) == CLS_JMP || CLS(op) == CLS_JMP32) && (op >> 4) != 0x08 && (op >> 4) != 0x09)) {
+      uint32_t target = local_call ? (uint32_t)((int64_t)pc + 1 + IMM(p))
+                                   : (uint32_t)jump_target(p, pc);
       // A second half always has opcode 0, so opcode lddw at target-1 means a first half.
       if (target > 0 && OPC(code + (target - 1) * 8) == OP_LDDW) BAD();
     }
@@ -146,8 +181,15 @@ bool h2_bpf_check_ptr(const h2_bpf_vm_t *vm, uint64_t addr, uint32_t len, bool w
 {
   uintptr_t a = (uintptr_t)addr;
   if ((uint64_t)a != addr || len == 0) return false;
+  // The stack, from the running function's slice upwards (its callers' slices are
+  // reachable through pointers they passed down; nothing below its own slice is).
   uintptr_t sb = (uintptr_t)vm->stack;
-  if (a >= sb && a - sb <= H2_BPF_STACK_SIZE && len <= H2_BPF_STACK_SIZE - (a - sb)) return true;
+  uintptr_t lo = vm->stack_low ? (uintptr_t)vm->stack_low : sb;
+  if (a >= lo && a - sb <= H2_BPF_STACK_SIZE && len <= H2_BPF_STACK_SIZE - (a - sb)) return true;
+  if (vm->data != NULL) {                    // constant data: read only
+    uintptr_t db = (uintptr_t)vm->data;
+    if (a >= db && a - db <= vm->data_len && len <= vm->data_len - (a - db)) return !write;
+  }
   for (uint8_t i = 0; i < vm->region_count; i++) {
     const h2_bpf_region_t *r = &vm->regions[i];
     uintptr_t rb = (uintptr_t)r->base;
@@ -165,6 +207,12 @@ h2_bpf_status_t h2_bpf_run(h2_bpf_vm_t *vm, uint64_t ctx, uint64_t *result)
   memset(vm->stack, 0, sizeof(vm->stack));
   reg[1] = ctx;
   reg[10] = (uint64_t)(uintptr_t)(vm->stack + H2_BPF_STACK_SIZE);
+  vm->stack_low = vm->stack + H2_BPF_STACK_SIZE - H2_BPF_FRAME_SIZE;
+
+  // Calls between program functions: the return address and the registers a callee
+  // must preserve are kept here, outside the program's reach.
+  struct { uint32_t return_pc; uint64_t r6, r7, r8, r9, r10; } frames[H2_BPF_MAX_DEPTH - 1];
+  uint8_t depth = 0;
 
   const uint32_t n = vm->code_len / 8;
   uint32_t pc = 0;
@@ -182,7 +230,12 @@ h2_bpf_status_t h2_bpf_run(h2_bpf_vm_t *vm, uint64_t ctx, uint64_t *result)
 
     switch (CLS(op)) {
       case CLS_LD:                                       // lddw (verified)
-        reg[dst] = (uint64_t)(uint32_t)imm | ((uint64_t)(uint32_t)IMM(p + 8) << 32);
+        if (src == LDDW_DATA) {
+          if (vm->data == NULL || (uint32_t)imm >= vm->data_len) FAIL(H2_BPF_ERR_MEMORY);
+          reg[dst] = (uint64_t)(uintptr_t)(vm->data + (uint32_t)imm);
+        } else {
+          reg[dst] = (uint64_t)(uint32_t)imm | ((uint64_t)(uint32_t)IMM(p + 8) << 32);
+        }
         pc += 2;
         continue;
 
@@ -276,8 +329,34 @@ h2_bpf_status_t h2_bpf_run(h2_bpf_vm_t *vm, uint64_t ctx, uint64_t *result)
       case CLS_JMP32: {
         uint8_t jop = op >> 4;
         if (jop == 0x9) {                                // exit
-          if (result) *result = reg[0];
-          return H2_BPF_OK;
+          if (depth == 0) {
+            if (result) *result = reg[0];
+            return H2_BPF_OK;
+          }
+          depth--;                                       // return to the calling function
+          reg[6] = frames[depth].r6;
+          reg[7] = frames[depth].r7;
+          reg[8] = frames[depth].r8;
+          reg[9] = frames[depth].r9;
+          reg[10] = frames[depth].r10;
+          reg[1] = reg[2] = reg[3] = reg[4] = reg[5] = 0;
+          vm->stack_low += H2_BPF_FRAME_SIZE;
+          pc = frames[depth].return_pc;
+          continue;
+        }
+        if (jop == 0x8 && src == CALL_LOCAL) {           // call another function of the program
+          if (depth >= H2_BPF_MAX_DEPTH - 1) FAIL(H2_BPF_ERR_DEPTH);
+          frames[depth].return_pc = pc + 1;
+          frames[depth].r6 = reg[6];
+          frames[depth].r7 = reg[7];
+          frames[depth].r8 = reg[8];
+          frames[depth].r9 = reg[9];
+          frames[depth].r10 = reg[10];
+          depth++;
+          vm->stack_low -= H2_BPF_FRAME_SIZE;            // the callee gets the next slice down
+          reg[10] = (uint64_t)(uintptr_t)(vm->stack_low + H2_BPF_FRAME_SIZE);
+          pc = (uint32_t)((int64_t)pc + 1 + imm);
+          continue;
         }
         if (jop == 0x8) {                                // call host helper
           bool ok = true;
