@@ -1,7 +1,7 @@
 // Keeping a switch in step with lamps that other things also control.
 //
-// The lamps of a group tell the switch when they change (the firmware arranges that the
-// first time they answer). These helpers keep "which lamps are on" in one variable and
+// The lamps of a group tell the switch when they change: the first time a lamp answers,
+// sync_report() asks it to report here from then on. These helpers keep "which lamps are on" in one variable and
 // the last reported colour temperature in another, so a rule can show the real state and
 // act on it. Reports are news about the state: nothing here sends a command.
 #ifndef H2_LIB_SYNC_H
@@ -21,13 +21,19 @@ H2_INLINE void sync_start(long group, long with_colour)
   }
 }
 
-// Call for every event. Returns 0 if the event is not a lamp report, 1 if a lamp's on/off
-// state was recorded, 2 if a colour temperature was recorded.
+// Call for every event. Returns 0 if the event is not about a lamp, 1 if a lamp's on/off
+// state was recorded (or the lamp is gone), 2 if a colour temperature was recorded, 3 if a
+// new lamp was found (nothing is known about its state yet).
 //   var_on_mask: variable holding one bit per lamp that is on
 //   var_mireds:  variable holding the last colour temperature reported (or -1 for none)
 H2_INLINE long sync_report(struct h2_event *ev, long var_on_mask, long var_mireds)
 {
   if (!H2_IS_REMOTE(ev->source)) return 0;
+  if (ev->type == H2_EV_FOUND) {        // a lamp we had not heard before: ask it to keep us posted
+    report_here(ev->source - H2_SRC_REMOTE(0), CL_ON_OFF);
+    if (var_mireds >= 0) report_here(ev->source - H2_SRC_REMOTE(0), CL_COLOUR);
+    return 3;
+  }
   if (ev->type == H2_EV_LOST) {         // the lamp is gone: it no longer counts as on
     var_set(var_on_mask, var_get(var_on_mask) & ~(1 << (ev->source - H2_SRC_REMOTE(0))));
     return 1;

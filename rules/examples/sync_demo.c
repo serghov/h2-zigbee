@@ -28,6 +28,10 @@ int on_event(struct h2_event *ev)
     show();
     return 1;
   }
+  if (ev->type == H2_EV_FOUND && H2_IS_REMOTE(ev->source)) {
+    report_here(ev->source - H2_SRC_REMOTE(0), 0x0006);   // keep us posted from now on
+    return 1;
+  }
   if (ev->type == H2_EV_REPORT && H2_IS_REMOTE(ev->source)) {
     long bit = 1 << (ev->source - H2_SRC_REMOTE(0));
     long mask = var_get(VAR_ON_MASK);

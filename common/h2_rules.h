@@ -48,6 +48,7 @@
 #define H2_RULES_EV_VAR          12     // a public variable was written from outside; value = index
 #define H2_RULES_EV_TRIGGER      13     // a trigger was written from outside; value = its number
 #define H2_RULES_EV_REPORT       14     // another device reported an attribute the program watches
+#define H2_RULES_EV_FOUND        16     // a device reported (or answered a read) for the first time
 #define H2_RULES_EV_LOST         15     // that device was dropped (silent for an hour, or it came
                                         // back under a new address): forget what it reported
 
@@ -123,9 +124,9 @@ bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value);
 // value per device is kept and handed to the program as H2_RULES_EV_REPORT: only when it
 // changed, and at most every 250 ms per device and attribute.
 //
-// A device that answers a group_read is asked, once, to report the watched clusters to
-// this device from then on (ZDO bind to endpoint H2_RULES_REPORT_ENDPOINT), so no binding
-// has to be set up on the hub.
+// When a device is heard for the first time the program gets H2_RULES_EV_FOUND and can ask
+// for it to report a cluster here from then on (helper report_here: a ZDO bind to
+// endpoint H2_RULES_REPORT_ENDPOINT), so no binding has to be set up on the hub.
 #define H2_RULES_REPORT_ENDPOINT  11
 void h2_rules_incoming(uint16_t source_node, uint8_t source_endpoint, uint16_t cluster,
                        const uint8_t *msg, uint16_t len);

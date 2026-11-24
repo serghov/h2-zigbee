@@ -83,21 +83,24 @@ static uint8_t watch_count;
 #define PEER_AGE_CHECK_MS     60000
 static uint16_t peer_node[PEERS];      // short address
 static bool     peer_used[PEERS];
+static uint8_t  peer_endpoint[PEERS];  // the endpoint its reports come from
 static uint32_t peer_heard[PEERS];     // when it last sent anything we watch
 static bool     timer_reaction[H2_RULES_TIMERS];   // the timer was started while reacting
 static sl_zigbee_af_event_t peer_age_event;
+static uint8_t  found_mask;            // devices the program has not been told about yet
 
-// Self-binding: a device that answers a group_read is asked to report to this one from
-// then on (a ZDO bind of each watched cluster to this device), so nobody has to set up
-// bindings on the hub. Asking again for a binding that exists is harmless.
+// Binding on request of the program (helper report_here): a device is asked to report a
+// cluster to this one from then on (a ZDO bind), so nobody has to set up bindings on the
+// hub. The firmware does the mechanics: it finds the device's long address first, then
+// sends the request. Asking again for a binding that exists is harmless.
+#define BIND_CLUSTERS         4
 #define BIND_STEP_MS          300
 #define BIND_ADDRESS_TRIES    5
 static struct {
   uint8_t  eui[8];
   bool     have_eui;
-  bool     answered;                   // it answered a group read: it may be bound
-  uint8_t  endpoint;                   // the device's endpoint that answered
-  uint8_t  wanted;                     // bit w = watch w still needs a binding
+  uint16_t cluster[BIND_CLUSTERS];     // clusters still to be bound
+  uint8_t  wanted;                     // how many of them
   uint8_t  tries;
 } peer_bind[PEERS];
 static sl_zigbee_af_event_t bind_event;
@@ -155,8 +158,18 @@ static bool reaction_allows(void)
   return true;
 }
 
+static long send_zcl_frame(bool group, uint16_t dest, uint8_t dest_endpoint, uint16_t cluster,
+                           uint8_t command, bool global, const uint8_t *payload, uint8_t len);
+
 static long send_zcl(bool group, uint16_t dest, uint8_t dest_endpoint, uint16_t cluster,
                      uint8_t command, const uint8_t *payload, uint8_t len)
+{
+  return send_zcl_frame(group, dest, dest_endpoint, cluster, command, false, payload, len);
+}
+
+// global = a general ZCL command (read, configure reporting, ...), not one of the cluster's own.
+static long send_zcl_frame(bool group, uint16_t dest, uint8_t dest_endpoint, uint16_t cluster,
+                           uint8_t command, bool global, const uint8_t *payload, uint8_t len)
 {
   if (messages_left == 0 || sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
     return -1;
@@ -165,8 +178,8 @@ static long send_zcl(bool group, uint16_t dest, uint8_t dest_endpoint, uint16_t 
   messages_left--;
 
   uint8_t msg[3 + ZCL_PAYLOAD_MAX];
-  msg[0] = ZCL_CLUSTER_SPECIFIC_COMMAND | ZCL_FRAME_CONTROL_CLIENT_TO_SERVER
-           | ZCL_DISABLE_DEFAULT_RESPONSE_MASK;
+  msg[0] = (global ? ZCL_GLOBAL_COMMAND : ZCL_CLUSTER_SPECIFIC_COMMAND)
+           | ZCL_FRAME_CONTROL_CLIENT_TO_SERVER | ZCL_DISABLE_DEFAULT_RESPONSE_MASK;
   msg[1] = sl_zigbee_af_next_sequence();
   msg[2] = command;
   if (len) memcpy(msg + 3, payload, len);
@@ -228,6 +241,36 @@ static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *o
       }
       return (uint64_t)send_zcl(true, (uint16_t)a[0], 0, (uint16_t)a[1], (uint8_t)a[2],
                                 (const uint8_t *)(uintptr_t)a[3], (uint8_t)a[4]);
+    case 18: { // report_here(device, cluster): ask that device to report the cluster to us
+      uint8_t p = (uint8_t)a[0];
+      if (a[0] >= PEERS || !peer_used[p]) return (uint64_t)-1;
+      for (uint8_t i = 0; i < peer_bind[p].wanted; i++) {
+        if (peer_bind[p].cluster[i] == (uint16_t)a[1]) return 0;   // already queued
+      }
+      if (peer_bind[p].wanted >= BIND_CLUSTERS) return (uint64_t)-1;
+      peer_bind[p].cluster[peer_bind[p].wanted++] = (uint16_t)a[1];
+      if (!sl_zigbee_af_event_is_scheduled(&bind_event)) {
+        sl_zigbee_af_event_set_delay_ms(&bind_event, BIND_STEP_MS);
+      }
+      return 0;
+    }
+    case 17: { // zcl_send(dest, cluster, command | flags, payload, len)
+      if (a[4] > ZCL_PAYLOAD_MAX
+          || (a[4] > 0 && !h2_bpf_check_ptr(m, a[3], (uint32_t)a[4], false))) {
+        *ok = false;
+        return 0;
+      }
+      bool global = (a[2] & 0x100) != 0;
+      if (a[0] & 0x10000) {            // one device this program has heard from
+        uint8_t p = (uint8_t)(a[0] & 0xFF);
+        if (p >= PEERS || !peer_used[p]) return (uint64_t)-1;
+        return (uint64_t)send_zcl_frame(false, peer_node[p], peer_endpoint[p], (uint16_t)a[1],
+                                        (uint8_t)a[2], global,
+                                        (const uint8_t *)(uintptr_t)a[3], (uint8_t)a[4]);
+      }
+      return (uint64_t)send_zcl_frame(true, (uint16_t)a[0], 0, (uint16_t)a[1], (uint8_t)a[2], global,
+                                      (const uint8_t *)(uintptr_t)a[3], (uint8_t)a[4]);
+    }
     case 6:   // led_set(led, red, blue)
 #if H2_HAS_LED_ENDPOINTS
       if (a[0] >= h2_led_ep_count()) return (uint64_t)-1;
@@ -280,14 +323,6 @@ static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *o
       if (watch_count >= WATCHES) return (uint64_t)-1;
       watches[watch_count].cluster = (uint16_t)a[0];
       watches[watch_count].attr = (uint16_t)a[1];
-      for (uint8_t p = 0; p < PEERS; p++) {      // devices already answering: bind this one too
-        if (peer_used[p] && peer_bind[p].answered) {
-          peer_bind[p].wanted |= (uint8_t)(1u << watch_count);
-          if (!sl_zigbee_af_event_is_scheduled(&bind_event)) {
-            sl_zigbee_af_event_set_delay_ms(&bind_event, BIND_STEP_MS);
-          }
-        }
-      }
       return watch_count++;
     case 16: { // group_read(group, cluster, attribute): members answer with their value
       if (messages_left == 0 || sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK
@@ -361,6 +396,7 @@ static bool run_event(uint8_t source, uint8_t type, int32_t value, uint16_t clus
 
   running = true;
   in_reaction = reaction || (type == H2_RULES_EV_REPORT) || (type == H2_RULES_EV_LOST)
+                || (type == H2_RULES_EV_FOUND)
                 || (source == H2_RULES_SRC_SYSTEM
                     && (type == H2_RULES_EV_VAR || type == H2_RULES_EV_TRIGGER));
   messages_left = BUDGET_MESSAGES;
@@ -464,6 +500,16 @@ static void remote_handler(sl_zigbee_af_event_t *event)
 {
   sl_zigbee_af_event_set_inactive(event);
   if (!active) return;
+  for (uint8_t p = 0; p < PEERS; p++) {             // newly heard devices first
+    if (found_mask & (1u << p)) {
+      found_mask &= (uint8_t)~(1u << p);
+      if (peer_used[p]) {
+        (void)run_event((uint8_t)(H2_RULES_SRC_REMOTE0 + p), H2_RULES_EV_FOUND, 0, 0, 0, true);
+        sl_zigbee_af_event_set_active(&remote_event);  // values on the next pass
+        return;
+      }
+    }
+  }
   uint32_t now = halCommonGetInt32uMillisecondTick();
   uint32_t soonest = 0xFFFFFFFF;
   bool delivered = false;
@@ -557,22 +603,16 @@ static void bind_handler(sl_zigbee_af_event_t *event)
         continue;
       }
     }
-    for (uint8_t w = 0; w < watch_count; w++) {
-      if (!(peer_bind[p].wanted & (1u << w))) continue;
-      // One request covers every watch on the same cluster.
-      for (uint8_t v = w; v < watch_count; v++) {
-        if (watches[v].cluster == watches[w].cluster) peer_bind[p].wanted &= (uint8_t)~(1u << v);
-      }
-      sl_802154_long_addr_t self;
-      sl_zigbee_af_get_eui64(self);
-      sl_status_t st = sl_zigbee_bind_request(peer_node[p], peer_bind[p].eui, peer_bind[p].endpoint,
-                                              watches[w].cluster, UNICAST_BINDING, self, 0,
-                                              H2_RULES_REPORT_ENDPOINT, SL_ZIGBEE_APS_OPTION_RETRY);
-      sl_zigbee_app_debug_println("Rules: asked node 0x%04X to report cluster 0x%04X here -> 0x%02X",
-                                   peer_node[p], watches[w].cluster, st);
-      sl_zigbee_af_event_set_delay_ms(&bind_event, BIND_STEP_MS);
-      return;
-    }
+    uint16_t cluster = peer_bind[p].cluster[--peer_bind[p].wanted];
+    sl_802154_long_addr_t self;
+    sl_zigbee_af_get_eui64(self);
+    sl_status_t st = sl_zigbee_bind_request(peer_node[p], peer_bind[p].eui, peer_endpoint[p],
+                                            cluster, UNICAST_BINDING, self, 0,
+                                            H2_RULES_REPORT_ENDPOINT, SL_ZIGBEE_APS_OPTION_RETRY);
+    sl_zigbee_app_debug_println("Rules: asked node 0x%04X to report cluster 0x%04X here -> 0x%02X",
+                                 peer_node[p], cluster, st);
+    sl_zigbee_af_event_set_delay_ms(&bind_event, BIND_STEP_MS);
+    return;
   }
 }
 
@@ -617,6 +657,8 @@ static void remote_value(uint16_t node, uint8_t endpoint, bool answered_read,
     }
     peer_used[p] = true;
     peer_node[p] = node;
+    peer_endpoint[p] = endpoint;
+    found_mask |= (uint8_t)(1u << p);  // the program is told before the value arrives
     memset(&peer_bind[p], 0, sizeof(peer_bind[p]));
     memset(remote_slot[p], 0, sizeof(remote_slot[p]));
     if (!sl_zigbee_af_event_is_scheduled(&peer_age_event)) {
@@ -624,15 +666,6 @@ static void remote_value(uint16_t node, uint8_t endpoint, bool answered_read,
     }
   }
   peer_heard[p] = halCommonGetInt32uMillisecondTick();
-  if (answered_read && !peer_bind[p].answered) {
-    // First answer from this device: ask it to report every watched attribute here.
-    peer_bind[p].answered = true;
-    peer_bind[p].endpoint = endpoint;
-    peer_bind[p].wanted = (uint8_t)((1u << watch_count) - 1);
-    if (!sl_zigbee_af_event_is_scheduled(&bind_event)) {
-      sl_zigbee_af_event_set_delay_ms(&bind_event, BIND_STEP_MS);
-    }
-  }
   // Change-only: a value the program already has, with nothing newer waiting, is dropped.
   if (remote_slot[p][w].known && remote_slot[p][w].value == value) {
     remote_slot[p][w].dirty = false;  // back to what the program has: nothing to deliver
@@ -708,6 +741,7 @@ static void stop_program(void)
   memset(peer_used, 0, sizeof(peer_used));
   memset(peer_bind, 0, sizeof(peer_bind));
   memset(timer_reaction, 0, sizeof(timer_reaction));
+  found_mask = 0;
   memset(remote_slot, 0, sizeof(remote_slot));
   for (uint8_t b = 0; b < 8; b++) {
     h2_rules_host_max_clicks(b, 1, false);   // gesture settings belong to the program

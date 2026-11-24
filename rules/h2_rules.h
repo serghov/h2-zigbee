@@ -60,6 +60,8 @@ struct h2_event {
 #define H2_EV_TRIGGER      13         // source H2_SRC_SYSTEM: a trigger arrived; value = its number
 #define H2_EV_REPORT       14         // source H2_SRC_REMOTE(n): that device's attribute
                                       // ev->cluster / ev->attr now has the value ev->value
+#define H2_EV_FOUND        16         // source H2_SRC_REMOTE(n): that device was heard for the
+                                      // first time (it answered a read, or reported)
 #define H2_EV_LOST         15         // source H2_SRC_REMOTE(n): that device is gone (silent for
                                       // an hour, or back under a new number): forget its state
 
@@ -78,14 +80,24 @@ struct h2_event {
 // from a small allowance (about 4 per 10 s); use them to update state and LEDs, not to
 // send commands.
 // State of other devices. group_read() asks all members of a group for a value. Each
-// device that answers is also asked, by the firmware, to report the watched attributes
-// to this switch from then on, so the lamps keep the switch informed whoever switches
-// them. Nothing has to be bound on the hub. Name the attributes of interest with watch() on H2_EV_BOOT (at
+// device that answers shows up as H2_EV_FOUND; report_here() then asks it to send its
+// changes of a cluster to this switch from then on, so the lamps keep the switch informed
+// whoever switches them. Nothing has to be bound on the hub. (lib/sync.h does all this.) Name the attributes of interest with watch() on H2_EV_BOOT (at
 // most 4); each change then arrives as H2_EV_REPORT, only when the value differs from the
 // last one delivered, and at most every 250 ms per device and attribute. Treat a report
 // as news about the state: update variables and LEDs. Radio messages sent while handling
 // one come from the same small allowance as for H2_EV_VAR.
+// Send any ZCL command. dest is H2_TO_GROUP(group) or H2_TO_DEVICE(n) for a device that
+// has reported here (n as in H2_SRC_REMOTE(n)). Add H2_ZCL_GENERAL to the command for the
+// general commands every cluster has (0x00 read attributes, 0x06 configure reporting, ...);
+// without it the command is one of the cluster's own, as with zcl_group().
+#define H2_TO_GROUP(g)     (g)
+#define H2_TO_DEVICE(n)    (0x10000 + (n))
+#define H2_ZCL_GENERAL     0x100
+H2_FN(17, long, zcl_send,     long dest, long cluster, long command, const void *payload, long len);
+
 H2_FN(15, long, watch,        long cluster, long attr);
+H2_FN(18, long, report_here,  long device, long cluster);             // device n as in H2_SRC_REMOTE(n)
 H2_FN(16, long, group_read,   long group, long cluster, long attr);
 
 H2_FN(14, long, var_public,   long mask);                              // bit n = variable n is public

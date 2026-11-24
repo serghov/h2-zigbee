@@ -11,6 +11,7 @@
 // variable 0 (0 off, 1 Day, 2 Night): the hub can read it, and writing it switches mode.
 #include "../lib/lights_tradfri.h"
 #include "../lib/sync.h"
+#include "../lib/reporting.h"
 
 #ifndef GROUP
 #define GROUP        16
@@ -30,6 +31,18 @@
 #define VAR_MODE     0                // public
 #define VAR_ON_MASK  1                // one bit per bulb that is on
 #define VAR_MIREDS   2                // last colour temperature a bulb reported
+#define VAR_HOURS    3                // hours since the reporting interval was last set
+
+#define TIMER_HOURLY 3
+#define HOUR_MS      3600000
+
+// The bulbs should report a colour change within a second (the hub sets 30 s), and at
+// least every 15 minutes. Sent at start and once a day, in case the hub put its value back.
+H2_INLINE void prompt_colour_reports(void)
+{
+  report_within(GROUP, CL_COLOUR, ATTR_COLOUR_TEMP, 1, 900);
+  var_set(VAR_HOURS, 0);
+}
 
 // red + blue = purple
 H2_INLINE void show(long mode)
@@ -63,12 +76,21 @@ int on_event(struct h2_event *ev)
     relay_set(0, H2_ON);              // the bulbs need mains
     var_public(1 << VAR_MODE);
     sync_start(GROUP, 1);
+    prompt_colour_reports();
+    timer_start(TIMER_HOURLY, HOUR_MS);
     show(var_get(VAR_MODE));
+    return 1;
+  }
+  if (ev->source == H2_SRC_TIMER && ev->value == TIMER_HOURLY) {
+    var_set(VAR_HOURS, var_get(VAR_HOURS) + 1);
+    if (var_get(VAR_HOURS) >= 24) prompt_colour_reports();
+    timer_start(TIMER_HOURLY, HOUR_MS);
     return 1;
   }
 
   // News from the bulbs: follow it, send nothing.
   long news = sync_report(ev, VAR_ON_MASK, VAR_MIREDS);
+  if (news == 3) return 1;                         // a new bulb: its state follows
   if (news) {
     long mode = var_get(VAR_MODE);
     if (!sync_any_on(VAR_ON_MASK))                 set_mode(MODE_OFF);
