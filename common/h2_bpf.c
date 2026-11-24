@@ -114,6 +114,7 @@ h2_bpf_status_t h2_bpf_verify(const uint8_t *code, uint32_t code_len, uint32_t d
         if ((op >> 4) == 0x0D) {                         // byte swap
           int32_t w = IMM(p);
           if (w != 16 && w != 32 && w != 64) BAD();
+          if (OFF(p) != 0) BAD();
           if (CLS(op) == CLS_ALU64 && (op & SRC_X)) BAD();
         } else if ((op >> 4) == 0x03 || (op >> 4) == 0x09) {
           if (OFF(p) != 0 && OFF(p) != 1) BAD();         // 1 = signed div/mod (v4)
@@ -135,9 +136,13 @@ h2_bpf_status_t h2_bpf_verify(const uint8_t *code, uint32_t code_len, uint32_t d
           } else if (src != 0) {                         // 0 = host function by number
             BAD();
           }
-        } else if (jop == 0x09) {                        // exit
-          if (CLS(op) != CLS_JMP) BAD();
+        } else if (jop == 0x09) {                        // exit: exactly 0x95, nothing else set
+          if (op != 0x95 || dst != 0 || src != 0 || OFF(p) != 0 || IMM(p) != 0) BAD();
         } else if (jop <= 0x0D) {
+          if (jop == 0x00) {                             // unconditional: only "ja off" and "gotol imm"
+            if (op != 0x05 && op != 0x06) BAD();
+            if (op == 0x06 && OFF(p) != 0) BAD();
+          }
           int64_t target = jump_target(p, pc);
           if (target < 0 || target >= (int64_t)n) BAD();
         } else {

@@ -51,6 +51,57 @@ def read_elf(path):
                 syms.append(dict(name=cstr(names, n), shndx=shndx, value=value, type=info & 15))
     return secs, syms
 
+FRAME_SIZE, MAX_DEPTH = 128, 6      # H2_BPF_FRAME_SIZE, H2_BPF_MAX_DEPTH in common/h2_bpf.h
+
+def check_limits(text):
+    """Catch at build time what would otherwise only fault on the device: a function that
+    uses more stack than one call gets, recursion, and calls nested too deeply.
+    The stack check sees direct accesses below the frame pointer and the usual way of
+    taking a local buffer's address; it is a help, not a proof."""
+    n = len(text) // 8
+    def insn(i):
+        op = text[i * 8]; regs = text[i * 8 + 1]
+        off, imm = struct.unpack_from("<hi", text, i * 8 + 2)
+        return op, regs & 15, regs >> 4, off, imm
+    starts = {0}
+    for i in range(n):
+        op, dst, src, off, imm = insn(i)
+        if op == 0x85 and src == 1:
+            starts.add(i + 1 + imm)
+    starts = sorted(x for x in starts if 0 <= x < n)
+    def func_of(i):
+        return max(x for x in starts if x <= i)
+    calls = {f: set() for f in starts}
+    deepest = {f: 0 for f in starts}
+    i = 0
+    while i < n:
+        op, dst, src, off, imm = insn(i)
+        f = func_of(i)
+        cls = op & 7
+        if op == 0x85 and src == 1 and 0 <= i + 1 + imm < n:
+            calls[f].add(i + 1 + imm)
+        if cls in (1, 2, 3) and off < 0:                       # load/store relative to r10
+            base_reg = src if cls == 1 else dst
+            if base_reg == 10:
+                deepest[f] = max(deepest[f], -off)
+        if op == 0x07 and imm < 0 and i > 0:                   # rX = r10; rX += -N
+            pop, pdst, psrc, _, _ = insn(i - 1)
+            if pop == 0xBF and psrc == 10 and pdst == dst:
+                deepest[f] = max(deepest[f], -imm)
+        i += 2 if op == 0x18 else 1
+    for f, used in deepest.items():
+        if used > FRAME_SIZE:
+            sys.exit(f"the function at instruction {f} uses {used} bytes of stack; a call gets {FRAME_SIZE}.\n"
+                     "Use smaller local buffers.")
+    def depth(f, path):
+        if f in path:
+            sys.exit(f"the function at instruction {f} calls itself (directly or through others); "
+                     "the firmware does not allow recursion deeper than a few levels, so it is refused here.")
+        return 1 + max((depth(g, path | {f}) for g in calls[f]), default=0)
+    d = depth(0, frozenset())
+    if d > MAX_DEPTH:
+        sys.exit(f"calls are nested {d} deep; the firmware allows {MAX_DEPTH} (on_event counts as one).")
+
 def compile_rules(src, out):
     with tempfile.TemporaryDirectory() as tmp:
         obj = os.path.join(tmp, "rules.o")
@@ -87,7 +138,15 @@ def compile_rules(src, out):
 
     # Relocations in the code: addresses of constant data, and calls the compiler left open.
     for sec in secs:
-        if sec["type"] != SHT_REL or sec["info"] != text_idx:
+        if sec["type"] != SHT_REL:
+            continue
+        if sec["info"] in base and sec["size"]:
+            # The constant data itself contains addresses (a table of strings or of
+            # function pointers). Nothing fixes those up when the program is loaded.
+            sys.exit(f"constant data in section {secs[sec['info']]['name']} contains pointers (for example a\n"
+                     "table of strings, 'const char *names[]'), which the firmware cannot resolve.\n"
+                     "Use a table of values or of fixed-size character arrays ('const char names[][8]').")
+        if sec["info"] != text_idx:
             continue
         for o in range(0, sec["size"], 16):
             r_off, r_info = struct.unpack_from("<QQ", sec["data"], o)
@@ -107,6 +166,8 @@ def compile_rules(src, out):
             else:
                 sys.exit(f"instruction {insn}: reference to '{sym['name'] or secs[sym['shndx']]['name'] if sym['shndx'] < len(secs) else sym['name']}' "
                          "cannot be resolved (only constant data and the file's own functions can be referenced)")
+
+    check_limits(text)
 
     if data:
         while len(data) % 8:              # the firmware takes images in whole 8-byte units

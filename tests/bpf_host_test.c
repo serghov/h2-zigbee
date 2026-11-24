@@ -161,6 +161,14 @@ int main(int argc, char **argv)
   { uint8_t c[] = { MOV64I(0, 0x1234), I(0xd7, 0, 0, 0, 16), EXIT };      expect_run("bswap16 v4", c, sizeof c, H2_BPF_OK, 0x3412); }
   { uint8_t c[] = { MOV64I(0, 0x1234), I(0xdc, 0, 0, 0, 16), EXIT };      expect_run("bswap16", c, sizeof c, H2_BPF_OK, 0x3412); }
 
+  // ---- encodings with unused fields set are refused ------------------------------------------
+  { uint8_t c[] = { MOV64I(0, 0), I(0x9d, 0, 0, 0, 0) };                   expect_verify("exit with source bit", c, sizeof c, H2_BPF_ERR_BAD_PROGRAM); }
+  { uint8_t c[] = { MOV64I(0, 0), I(0x95, 0, 0, 0, 5) };                   expect_verify("exit with immediate", c, sizeof c, H2_BPF_ERR_BAD_PROGRAM); }
+  { uint8_t c[] = { I(0x0d, 0, 0, 0, 0), MOV64I(0, 0), EXIT };             expect_verify("ja with source bit", c, sizeof c, H2_BPF_ERR_BAD_PROGRAM); }
+  { uint8_t c[] = { I(0x0e, 0, 0, 0, 0), MOV64I(0, 0), EXIT };             expect_verify("gotol with source bit", c, sizeof c, H2_BPF_ERR_BAD_PROGRAM); }
+  { uint8_t c[] = { I(0x06, 0, 0, 3, 0), MOV64I(0, 0), EXIT };             expect_verify("gotol with offset", c, sizeof c, H2_BPF_ERR_BAD_PROGRAM); }
+  { uint8_t c[] = { MOV64I(0, 1), I(0xd7, 0, 0, 2, 16), EXIT };            expect_verify("byte swap with offset", c, sizeof c, H2_BPF_ERR_BAD_PROGRAM); }
+
   // ---- calls between program functions ----------------------------------------------------
   { uint8_t c[] = { I(0x85, 0, 1, 0, 1), EXIT, MOV64I(0, 7), EXIT };
                                                              expect_run("local call returns", c, sizeof c, H2_BPF_OK, 7); }
