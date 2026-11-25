@@ -12,6 +12,17 @@
 #include "../h2_rules.h"
 #include "zcl.h"
 
+// Colour temperature in mireds, at once.
+H2_INLINE void lights_colour(long group, long mireds)
+{
+  u8 p[4];
+  p[0] = (u8)(mireds & 0xFF);
+  p[1] = (u8)(mireds >> 8);
+  p[2] = 0;                            // transition time, 16 bit: none
+  p[3] = 0;
+  zcl_group(group, CL_COLOUR, CMD_COLOUR_TEMP, p, 4);
+}
+
 // On at this brightness (1..254) and colour temperature (mireds; 0 = leave the colour).
 H2_INLINE void lights_on(long group, long level, long mireds)
 {
@@ -21,13 +32,7 @@ H2_INLINE void lights_on(long group, long level, long mireds)
   p[2] = 0;
   zcl_group(group, CL_LEVEL, CMD_LEVEL_ON_OFF, p, 3);
   zcl_group(group, CL_ON_OFF, CMD_ON, 0, 0);
-  if (mireds) {
-    p[0] = (u8)(mireds & 0xFF);
-    p[1] = (u8)(mireds >> 8);
-    p[2] = 0;                          // transition time, 16 bit: none
-    p[3] = 0;
-    zcl_group(group, CL_COLOUR, CMD_COLOUR_TEMP, p, 4);
-  }
+  if (mireds) lights_colour(group, mireds);
 }
 
 H2_INLINE void lights_off(long group)
