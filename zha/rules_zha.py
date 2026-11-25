@@ -1,5 +1,5 @@
 """Upload a compiled rule program through ZHA (runs inside the Home Assistant container).
-usage: rules_zha.py <ieee> info | erase | load <file.bpf>
+usage: rules_zha.py <ieee> info | erase | load <file.bpf> | wall 0|1   (wall: both relays in one message, a trial)
 Needs the h2-zigbee quirk (attributes rules_control/rules_data/rules_info/rules_fault)."""
 import asyncio, aiohttp, json, os, sys, time
 # HA_URL / HA_TOKEN in the environment select another Home Assistant than the local one.
@@ -48,9 +48,18 @@ async def main():
                                        ', upload in progress' if flags & 2 else '', ', safe mode' if flags & 4 else ''))
             print('last upload: %s (value %d)' % (RESULTS.get((c >> 16) & 0xFF, '?'), c & 0xFFFF))
             print('faults: %d, last code %d at instruction %d' % ((f >> 16) & 0xFF, f >> 24, f & 0xFFFF))
+            d, l = await read(0xFFC4), await read(0xFFC8)
+            if d is not None:
+                print('dropped: %d; settings store in use: %s' % (d & 0xFFFF, '%d bytes' % (d >> 16) if d >> 16 else 'not reported (firmware before 0x87)'))
+            if l is not None:
+                fl = (l >> 8) & 0xFF
+                print('relay link: answered %d, unanswered %d, last %s after %d tries, status %d%s' % ((l >> 16) & 0xFF, l >> 24,
+                      'answered' if fl & 1 else 'NOT answered', (l >> 4) & 0xF, l & 0xF, ', both relays in one message' if fl & 8 else ''))
             return c, i
         if mode == 'info':
             await show()
+        elif mode == 'wall':
+            print('wall:', 'ok' if await write(CONTROL, (4 << 24) | int(sys.argv[3])) else 'FAILED'); await show()
         elif mode == 'erase':
             print('erase:', 'ok' if await write(CONTROL, 3 << 24) else 'FAILED'); await show()
         else:

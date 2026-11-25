@@ -155,6 +155,15 @@ static struct {
   uint32_t phase_since;
 } set_tx;
 static bool set_pending[H2_SWITCH_GANG_COUNT];
+// The wanted state differs from the one last sent. Such a command goes out before one
+// that only repeats a state (the plate cannot see the relay, so repeats are sent too, but
+// they must not hold up a real change).
+static bool set_changed[H2_SWITCH_GANG_COUNT];
+// Trial: one message carries the wanted state of every relay. Off unless switched on
+// (h2_relay_set_combined); whether the wall module accepts it is being tested.
+static bool set_combined;
+static bool reassert_enabled;
+static uint32_t reassert_tick;
 
 static h2_relay_link_stats_t link_stats;
 
@@ -175,7 +184,20 @@ bool h2_relay_busy(void)
   return set_in_flight();
 }
 
-// Start an exchange for the next gang that has a command waiting.
+// The gang whose command goes next: one with a real change first. 0xFF if none waits.
+static uint8_t set_next_gang(void)
+{
+  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    if (set_pending[g] && set_changed[g]) return g;
+  }
+  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    if (set_pending[g]) return g;
+  }
+  return 0xFF;
+}
+
+// Start an exchange if a command is waiting. Which gang it is for is decided when the
+// lead time is over, so commands given together are ordered by what they change.
 static void set_start_next(void)
 {
   for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
@@ -231,8 +253,23 @@ static void set_service(void)
         // Build the frame now, from the state wanted now; anything set after this point
         // marks the gang pending again.
         uint8_t payload[24];
-        set_pending[set_tx.gang] = false;
-        uint8_t n = relay_set_payload(set_tx.gang, payload);
+        uint8_t n = 0;
+        uint8_t next = set_next_gang();
+        if (next != 0xFF) set_tx.gang = next;
+#if !H2_HAS_DIMMER
+        if (set_combined) {
+          for (uint8_t g = 0; g < h2_active_gang_count && g < H2_SWITCH_GANG_COUNT; g++) {
+            set_pending[g] = false;
+            set_changed[g] = false;
+            n += relay_set_payload(g, payload + n);
+          }
+        }
+#endif
+        if (n == 0) {
+          set_pending[set_tx.gang] = false;
+          set_changed[set_tx.gang] = false;
+          n = relay_set_payload(set_tx.gang, payload);
+        }
         set_tx.len = build_frame(set_tx.frame, RELAY_TYPE, RELAY_CMD_SET, seq++, payload, n);
         set_tx.tries = 1;
         set_tx.phase = SET_WAIT;
@@ -261,6 +298,30 @@ static void set_service(void)
   }
 }
 
+void h2_relay_set_combined(bool on)
+{
+  set_combined = on;
+}
+
+// The wall module sent a status report. The stock firmware answers each with the relay
+// states again; the plate has no other way to keep the two sides in step. At most once
+// every 4 s, in case the repeat itself makes the module report.
+void h2_relay_enable_reassert(void)
+{
+  reassert_enabled = true;
+}
+
+static void relay_reassert(void)
+{
+  if (!reassert_enabled) return;
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  if (reassert_tick != 0 && sl_sleeptimer_tick_to_ms(now - reassert_tick) < 4000) return;
+  reassert_tick = now ? now : 1;
+  for (uint8_t g = 0; g < h2_active_gang_count && g < H2_SWITCH_GANG_COUNT; g++) {
+    relay_send_confirmed(g);
+  }
+}
+
 void h2_relay_note_protection(uint16_t entry_id, uint32_t value)
 {
   link_stats.protection_entry = entry_id;
@@ -280,7 +341,8 @@ bool h2_relay_attr_get(uint16_t attr_id, uint32_t *value)
     case H2_RELAY_ATTR_LINK:
       *value = ((uint32_t)link_stats.unacked << 24) | ((uint32_t)link_stats.acked << 16)
              | ((uint32_t)((set_in_flight() ? 0x02 : 0) | (link_stats.last_acked ? 0x01 : 0)
-                           | (link_stats.protection_events ? 0x04 : 0)) << 8)
+                           | (link_stats.protection_events ? 0x04 : 0)
+                           | (set_combined ? 0x08 : 0)) << 8)
              | (uint32_t)((link_stats.last_tries << 4) | (link_stats.last_status & 0x0F));
       return true;
     case H2_RELAY_ATTR_EVENT:
@@ -491,6 +553,10 @@ void h2_relay_process_rx(void)
 
       uint16_t cmd_id = ((uint16_t)cmd_hi << 8) | cmd_lo;
       rx_callback(cmd_id, marker, data_le, data_size);
+#if !H2_HAS_DIMMER
+      // (not the entries of a reply to one of our own requests)
+      if (cmd_id == 0x0000 && rx_dispatch_buf[4] != RELAY_CMD_QUERY && rx_dispatch_buf[4] != 0x04) relay_reassert();
+#endif
 
       off += 3 + data_size;
     }
@@ -672,6 +738,7 @@ void h2_relay_set(uint8_t gang, h2_relay_state_t state)
   if (gang >= h2_active_gang_count) {
     return;
   }
+  if (relay_state[gang] != state) set_changed[gang] = true;
   relay_state[gang] = state;
   relay_send_confirmed(gang);
 }

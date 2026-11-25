@@ -32,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000086  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000087  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -227,6 +227,19 @@ sl_zigbee_af_status_t sl_zigbee_af_external_attribute_write_cb(
 //--------------------------------------------------
 // Relay <-> On/Off cluster synchronization
 
+// Telling the rule program about relay changes it did not make itself.
+static bool rule_switching_relay;                 // a rule program is switching a relay now
+static uint8_t relay_told[H2_SWITCH_GANG_COUNT];  // the state the program last knew: 0, 1
+
+static void rules_note_relay(uint8_t gang, bool tell)
+{
+  if (gang >= H2_SWITCH_GANG_COUNT) return;
+  uint8_t now = (h2_relay_get(gang) == H2_RELAY_ON) ? 1 : 0;
+  if (relay_told[gang] == now) return;
+  relay_told[gang] = now;
+  if (tell && !rule_switching_relay) h2_rules_relay_changed(gang);
+}
+
 static void sync_relay_to_cluster(uint8_t gang)
 {
   h2_relay_state_t state = h2_relay_get(gang);
@@ -239,6 +252,7 @@ static void sync_relay_to_cluster(uint8_t gang)
     ZCL_BOOLEAN_ATTRIBUTE_TYPE);
   h2_led_update_relay_state(gang, state == H2_RELAY_ON);
   h2_opple_save_relay_state(gang, state == H2_RELAY_ON);
+  rules_note_relay(gang, true);
 }
 
 //--------------------------------------------------
@@ -258,8 +272,10 @@ static void power_on_handler(sl_zigbee_af_event_t *event)
   }
   for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     h2_opple_apply_power_on_behavior(g);
+    relay_told[g] = (h2_relay_get(g) == H2_RELAY_ON) ? 1 : 0;   // start-up is not news: BOOT follows
     sync_relay_to_cluster(g);
   }
+  h2_relay_enable_reassert();
 }
 
 //--------------------------------------------------
@@ -389,12 +405,14 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
 void h2_rules_host_relay_set(uint8_t gang, uint8_t mode)
 {
   if (gang >= h2_active_gang_count) return;
+  rule_switching_relay = true;       // its own doing: no H2_RULES_EV_RELAY for this
   if (mode == 2) {
     h2_relay_toggle(gang);
   } else {
     h2_relay_set(gang, mode ? H2_RELAY_ON : H2_RELAY_OFF);
   }
   sync_relay_to_cluster(gang);
+  rule_switching_relay = false;
 }
 
 bool h2_rules_host_relay_get(uint8_t gang)
@@ -405,6 +423,12 @@ bool h2_rules_host_relay_get(uint8_t gang)
 void h2_rules_host_level_set(uint8_t gang, uint8_t level)
 {
   (void)gang; (void)level;       // no dimmer on this variant
+}
+
+void h2_rules_host_press_times(uint16_t hold_ms, uint16_t double_ms)
+{
+  h2_button_set_long_press_ms(hold_ms ? hold_ms : 300);
+  h2_button_set_double_press_ms(double_ms ? double_ms : 300);
 }
 
 void h2_rules_host_max_clicks(uint8_t button, uint8_t clicks, bool wait)
@@ -652,6 +676,7 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
       h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
       h2_led_update_relay_state(g, on_off_val != 0);
       h2_opple_save_relay_state(g, on_off_val != 0);
+      rules_note_relay(g, true);
       sl_zigbee_app_debug_println("Relay %d: %s", g, on_off_val ? "ON" : "OFF");
       break;
     }

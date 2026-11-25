@@ -23,7 +23,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define H2_RULES_MAX_BYTES     4096       // 512 instructions
+#define H2_RULES_MAX_BYTES     8192       // 1024 instructions; the store must also have room (commit)
+// Everything in the NVM3 store may add up to this after a program is stored (h2_rules.c).
+// The store is 5 pages of 8 kB (NVM3_DEFAULT_NVM_SIZE 40960), which holds 23,992 bytes.
+#define STORE_BUDGET_BYTES     18000
 #define H2_RULES_VARS           16
 #define H2_RULES_TIMERS         4
 
@@ -49,11 +52,16 @@
 #define H2_RULES_EV_TRIGGER      13     // a trigger was written from outside; value = its number
 #define H2_RULES_EV_REPORT       14     // another device reported an attribute the program watches
 #define H2_RULES_EV_FOUND        16     // a device reported (or answered a read) for the first time
+#define H2_RULES_EV_RELAY        17     // a relay was switched by something other than the program
+                                        // (hub, binding, built-in button behaviour); value = relay
 #define H2_RULES_EV_LOST         15     // that device was dropped (silent for an hour, or it came
                                         // back under a new address): forget what it reported
 
 // Call once from sl_zigbee_af_main_init_cb(). Pass true in safe mode: rules stay off.
 void h2_rules_init(bool safe_mode);
+
+// A relay changed state and the program did not do it: tell the program (H2_RULES_EV_RELAY).
+void h2_rules_relay_changed(uint8_t gang);
 
 // Deliver an event. Returns true if a rule program handled it.
 bool h2_rules_event(uint8_t source, uint8_t type, int32_t value);
@@ -83,6 +91,8 @@ void h2_rules_print_info(void);
 //                      verifies, stores and activates. The write fails if the program
 //                      is refused; read CONTROL for the reason.
 //              ERASE   remove the stored program
+//              WALL    argument bit 0: send both relays to the wall module in one message
+//                      (a trial, kept until restart; see h2_relay.h)
 //            read: (flags << 24) | (result of the last commit << 16) | value
 //              flags   bit 0 a program is running, bit 1 an upload is in progress,
 //                      bit 2 safe mode (programs are stored but do not run)
@@ -100,7 +110,8 @@ void h2_rules_print_info(void);
 //            value it already has does nothing. When the program changes a public
 //            variable, the device reports the attribute to the hub.
 //   TRIGGER  uint32, write only: raises H2_RULES_EV_TRIGGER with the written number.
-//   DROPPED  uint32, read: radio messages and outside events dropped by the limits.
+//   DROPPED  uint32, read: (bytes in use in the settings store << 16) | radio messages and
+//            outside events dropped by the limits (both stop at 65535).
 // Radio messages a program sends while handling VAR or TRIGGER events come out of a small
 // allowance (4, refilled one per 2.5 s), so reaction loops cannot flood the network.
 #define H2_RULES_ATTR_VAR0      0xFFA0
@@ -113,6 +124,7 @@ void h2_rules_print_info(void);
 #define H2_RULES_OP_BEGIN       1
 #define H2_RULES_OP_COMMIT      2
 #define H2_RULES_OP_ERASE       3
+#define H2_RULES_OP_WALL        4
 
 bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value);
 
@@ -142,6 +154,8 @@ bool h2_rules_host_relay_get(uint8_t gang);
 void h2_rules_host_level_set(uint8_t gang, uint8_t level);
 // Multi-click detection for a button: clicks 1-3; wait: see h2_encoder_set_max_clicks().
 void h2_rules_host_max_clicks(uint8_t button, uint8_t clicks, bool wait);
+// Hold and double-click times of the buttons in ms; 0 = the firmware default.
+void h2_rules_host_press_times(uint16_t hold_ms, uint16_t double_ms);
 // Endpoint that rule-generated Zigbee commands are sent from.
 uint8_t h2_rules_host_source_endpoint(void);
 

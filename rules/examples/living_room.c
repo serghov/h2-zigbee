@@ -20,11 +20,13 @@
 //
 // The levels are public variables 0 (wired) and 1 (smart): 0 off, 1 half, 2 full. The hub
 // can read them, and writing one sets that section. The smart level follows what the
-// bulbs and the plug report, whoever switches them. The wired level is what this program
-// last set: a relay switched from the hub directly is not noticed.
+// bulbs and the plug report, and the wired level follows the relays, whoever switches them.
+//
+// Needs firmware 0x87 or later (relay events).
 #include "../lib/lights_tradfri.h"
 #include "../lib/sync.h"
 #include "../lib/scenes.h"
+#include "../lib/each.h"
 #include "../lib/reporting.h"
 
 #ifndef GROUP
@@ -69,6 +71,12 @@ static const struct { u8 level; u16 mireds; } SMART[] = {
 
 #define VAR_KNOWN      8                // one bit per lamp or plug that has been heard
 
+// The hub puts the bulbs' colour reporting back to 30 s whenever it configures them, so the
+// one-second setting is sent again once a day.
+#define TIMER_HOURLY   3
+#define HOUR_MS        3600000
+#define VAR_HOURS      4
+
 // Teaching the scenes: 0 not teaching, 1 the button is being held, 2.. the steps.
 #define TIMER_TEACH    1
 #define TEACH_HOLD_MS  5000
@@ -98,20 +106,34 @@ static __attribute__((noinline)) long after_press(long level, long top)
 }
 
 // ---- wired section -----------------------------------------------------------------------
-// The plate talks to the wall module about one relay at a time, and each exchange takes
-// over a tenth of a second: do not spend one on a relay that is already right.
-static __attribute__((noinline)) void relay_to(long relay, long on)
+static __attribute__((noinline)) void wired_show(long level)
 {
-  if (relay_get(relay) != on) relay_set(relay, on ? H2_ON : H2_OFF);
+  var_set(VAR_WIRED, level);
+  glow(WIRED_TOP, WIRED_BOTTOM, level);
 }
 
+// Both relays are always commanded, also one that should already be right: the plate
+// cannot see the relays, and saying it again is what corrects one that is not. The
+// firmware sends the one that changes first.
 static __attribute__((noinline)) void wired_set(long level)
 {
   if (level < 0 || level > 2) level = 0;
-  relay_to(MASTER, level >= 1);
-  relay_to(SECOND, level >= 2);
-  var_set(VAR_WIRED, level);
-  glow(WIRED_TOP, WIRED_BOTTOM, level);
+  relay_set(MASTER, level >= 1 ? H2_ON : H2_OFF);
+  relay_set(SECOND, level >= 2 ? H2_ON : H2_OFF);
+  wired_show(level);
+}
+
+// Something else switched a relay (the hub, a script). The second relay alone lights
+// nothing: if the master just went off it goes off too, and if it came on in the dark the
+// master comes on with it.
+static __attribute__((noinline)) void wired_follow(void)
+{
+  long master = relay_get(MASTER), second = relay_get(SECOND);
+  if (second && !master) {
+    if (var_get(VAR_WIRED)) { relay_set(SECOND, H2_OFF); second = 0; }
+    else                    { relay_set(MASTER, H2_ON);  master = 1; }
+  }
+  wired_show(master ? (second ? 2 : 1) : 0);
 }
 
 // ---- smart section -----------------------------------------------------------------------
@@ -130,14 +152,11 @@ static __attribute__((noinline)) void smart_send(void)
   p[1] = (u8)(GROUP >> 8);
   p[2] = (u8)level;                     // scene 1 = half, scene 2 = full
   // To each lamp heard so far; to the group only while none has been (just after start).
-  if (!known) {
+  long sent = level ? each_send(known, CL_SCENES, CMD_SCENE_RECALL, p, 3)
+                    : each_send(known, CL_ON_OFF, CMD_OFF, 0, 0);
+  if (!sent) {
     if (level) scene_recall(GROUP, level);
     else       lights_off(GROUP);
-  }
-  for (long n = 0; n < 8; n++) {
-    if (!(known & (1 << n))) continue;
-    if (level) zcl_send(H2_TO_DEVICE(n), CL_SCENES, CMD_SCENE_RECALL, p, 3);
-    else       zcl_send(H2_TO_DEVICE(n), CL_ON_OFF, CMD_OFF, 0, 0);
   }
 }
 
@@ -186,12 +205,25 @@ int on_event(struct h2_event *ev)
 {
   if (ev->type == H2_EV_BOOT) {
     var_public((1 << VAR_WIRED) | (1 << VAR_SMART));
-    // Start from what the relays are; the second relay alone lights nothing, so that is off.
-    wired_set(relay_get(MASTER) ? (relay_get(SECOND) ? 2 : 1) : 0);
+    wired_follow();                    // start from what the relays are
     sync_start(GROUP, 1);
     // The bulbs should report a colour change within a second (the hub sets 30 s).
     report_within(GROUP, CL_COLOUR, ATTR_COLOUR_TEMP, 1, 900);
     smart_show(var_get(VAR_SMART));
+    timer_start(TIMER_HOURLY, HOUR_MS);
+    return 1;
+  }
+  if (ev->source == H2_SRC_SYSTEM && ev->type == H2_EV_RELAY) {
+    wired_follow();
+    return 1;
+  }
+  if (ev->source == H2_SRC_TIMER && ev->value == TIMER_HOURLY) {
+    var_set(VAR_HOURS, var_get(VAR_HOURS) + 1);
+    if (var_get(VAR_HOURS) >= 24) {
+      report_within(GROUP, CL_COLOUR, ATTR_COLOUR_TEMP, 1, 900);
+      var_set(VAR_HOURS, 0);
+    }
+    timer_start(TIMER_HOURLY, HOUR_MS);
     return 1;
   }
   if (ev->source == H2_SRC_TIMER && ev->value == TIMER_SETTLE) {
@@ -209,11 +241,7 @@ int on_event(struct h2_event *ev)
   }
   // News from the bulbs and the plug: follow it, send nothing.
   long news = sync_report(ev, VAR_ON_MASK, VAR_MIREDS);
-  if (H2_IS_REMOTE(ev->source)) {
-    long bit = 1 << (ev->source - H2_SRC_REMOTE(0));
-    long known = var_get(VAR_KNOWN);
-    var_set(VAR_KNOWN, ev->type == H2_EV_LOST ? (known & ~bit) : (known | bit));
-  }
+  each_track(ev, VAR_KNOWN);
   if (news == 3) return 1;
   if (news) {
     long level = var_get(VAR_SMART);

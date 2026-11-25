@@ -32,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x0000005A  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000005C  // increment for each OTA release
 #define NVM3_KEY_BRIGHTNESS  0x0201
 #define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
@@ -624,6 +624,11 @@ void h2_rules_host_level_set(uint8_t gang, uint8_t level)
     sync_relay_to_cluster();
   }
   lc_start_transition(clamp_to_brightness_range(level), 200);
+}
+
+void h2_rules_host_press_times(uint16_t hold_ms, uint16_t double_ms)
+{
+  (void)hold_ms; (void)double_ms;     // the knob keeps its own timing
 }
 
 void h2_rules_host_max_clicks(uint8_t button, uint8_t clicks, bool wait)

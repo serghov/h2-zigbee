@@ -4,6 +4,7 @@
 
 #include "h2_rules.h"
 #include "h2_bpf.h"
+#include "h2_relay.h"
 #include "h2_variant.h"
 #if H2_HAS_LED_ENDPOINTS
 #include "h2_led_ep.h"
@@ -12,6 +13,10 @@
 #define NVM3_KEY_RULES_HDR    0x0240
 #define NVM3_KEY_RULES_DATA   0x0241       // .. 0x0241 + chunks
 #define CHUNK_BYTES           192
+// The program shares the NVM3 store with the Zigbee stack. A program is only stored if
+// everything in the store then stays within STORE_BUDGET_BYTES (set per store size in
+// h2_rules.h), which leaves the stack its room and the store slack to spread wear.
+#define STORE_OBJECT_OVERHEAD 8
 #define MAX_CHUNKS            ((H2_RULES_MAX_BYTES + CHUNK_BYTES - 1) / CHUNK_BYTES)
 
 #define BUDGET_INSTRUCTIONS   4000         // per event
@@ -348,6 +353,12 @@ static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *o
       public_mask = (uint16_t)a[0];
       dirty_mask &= public_mask;
       return 0;
+    case 19: { // press_times(hold_ms, double_ms): 0 = firmware default
+      uint16_t hold = a[0] == 0 ? 0 : (a[0] < 150 ? 150 : (a[0] > 5000 ? 5000 : (uint16_t)a[0]));
+      uint16_t dbl  = a[1] == 0 ? 0 : (a[1] < 100 ? 100 : (a[1] > 1000 ? 1000 : (uint16_t)a[1]));
+      h2_rules_host_press_times(hold, dbl);
+      return 0;
+    }
     case 13:  // max_clicks(button, clicks, wait)
       if (a[1] < 1 || a[1] > 3) return (uint64_t)-1;
       h2_rules_host_max_clicks((uint8_t)a[0], (uint8_t)a[1], a[2] != 0);
@@ -365,6 +376,13 @@ static uint64_t helper(h2_bpf_vm_t *m, uint32_t id, const uint64_t a[5], bool *o
 bool h2_rules_active(void)
 {
   return active;
+}
+
+static void ext_post(uint8_t type, int32_t value);
+
+void h2_rules_relay_changed(uint8_t gang)
+{
+  ext_post(H2_RULES_EV_RELAY, gang);
 }
 
 bool h2_rules_event(uint8_t source, uint8_t type, int32_t value)
@@ -402,7 +420,8 @@ static bool run_event(uint8_t source, uint8_t type, int32_t value, uint16_t clus
   in_reaction = reaction || (type == H2_RULES_EV_REPORT) || (type == H2_RULES_EV_LOST)
                 || (type == H2_RULES_EV_FOUND)
                 || (source == H2_RULES_SRC_SYSTEM
-                    && (type == H2_RULES_EV_VAR || type == H2_RULES_EV_TRIGGER));
+                    && (type == H2_RULES_EV_VAR || type == H2_RULES_EV_TRIGGER
+                        || type == H2_RULES_EV_RELAY));
   messages_left = BUDGET_MESSAGES;
   actions_left = BUDGET_ACTIONS;
   uint64_t result = 0;
@@ -485,6 +504,9 @@ static void ext_handler(sl_zigbee_af_event_t *event)
 static void ext_post(uint8_t type, int32_t value)
 {
   if (!active) return;
+  for (uint8_t i = 0; i < ext_count; i++) {       // the same news twice: once is enough
+    if (type == H2_RULES_EV_RELAY && ext_queue[i].type == type && ext_queue[i].value == value) return;
+  }
   if (ext_count >= EXT_QUEUE) {
     stat_dropped++;
     return;
@@ -750,6 +772,7 @@ static void stop_program(void)
   for (uint8_t b = 0; b < 8; b++) {
     h2_rules_host_max_clicks(b, 1, false);   // gesture settings belong to the program
   }
+  h2_rules_host_press_times(0, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -792,7 +815,7 @@ void h2_rules_erase(void)
   stop_program();
   code_len = 0;
   nvm3_deleteObject(nvm3_defaultHandle, NVM3_KEY_RULES_HDR);
-  for (uint8_t i = 0; i < MAX_CHUNKS; i++) {
+  for (uint16_t i = 0; i < MAX_CHUNKS; i++) {
     nvm3_deleteObject(nvm3_defaultHandle, NVM3_KEY_RULES_DATA + i);
   }
   sl_zigbee_app_debug_println("Rules: erased");
@@ -822,6 +845,35 @@ bool h2_rules_upload_data_at(uint16_t offset, const uint8_t *data, uint16_t leng
   return true;
 }
 
+// Bytes in use in the NVM3 store: every object with its header, lengths rounded to words.
+// The store lists its keys in no particular order, so they are all fetched in one call;
+// if there are more than the list holds, the answer is "full".
+#define STORE_KEYS_MAX 320
+static uint32_t store_used(void)
+{
+  static nvm3_ObjectKey_t keys[STORE_KEYS_MAX];
+  size_t n = nvm3_enumObjects(nvm3_defaultHandle, keys, STORE_KEYS_MAX, NVM3_KEY_MIN, NVM3_KEY_MAX);
+  if (n >= STORE_KEYS_MAX) return 0xFFFF;
+  uint32_t total = 0;
+  for (size_t i = 0; i < n; i++) {
+    uint32_t type;
+    size_t len = 0;
+    if (nvm3_getObjectInfo(nvm3_defaultHandle, keys[i], &type, &len) == ECODE_NVM3_OK) {
+      total += STORE_OBJECT_OVERHEAD + (uint32_t)((len + 3) & ~(size_t)3);
+    }
+    if ((i & 31) == 31) halResetWatchdog();
+  }
+  return total;
+}
+
+// What a program of this length takes in the store.
+static uint32_t store_cost(uint16_t length)
+{
+  if (length == 0) return 0;
+  uint32_t chunks = ((uint32_t)length + CHUNK_BYTES - 1) / CHUNK_BYTES;
+  return (uint32_t)length + chunks * STORE_OBJECT_OVERHEAD + STORE_OBJECT_OVERHEAD + 4;
+}
+
 static uint8_t commit(uint32_t *detail);
 
 uint8_t h2_rules_upload_commit(uint32_t *detail)
@@ -845,6 +897,25 @@ static uint8_t commit(uint32_t *detail)
     return 3;
   }
 
+  // Room in the store, counting what the program stored now gives back. Checked before
+  // anything is touched: a refused program leaves the old one in place.
+  {
+    rules_header_t old;
+    uint32_t old_cost = 0;
+    if (nvm3_readData(nvm3_defaultHandle, NVM3_KEY_RULES_HDR, &old, sizeof(old)) == ECODE_NVM3_OK
+        && old.length <= H2_RULES_MAX_BYTES) {
+      old_cost = store_cost(old.length);
+    }
+    uint32_t used = store_used();
+    uint32_t after = (used > old_cost ? used - old_cost : 0) + store_cost(staging_len);
+    if (after > STORE_BUDGET_BYTES) {
+      if (detail) *detail = after > 0xFFFF ? 0xFFFF : after;
+      sl_zigbee_app_debug_println("Rules: no room in the store (%lu bytes after)", (unsigned long)after);
+      staging_len = 0;
+      return 4;
+    }
+  }
+
   // Invalidate the stored copy first, so a power cut mid-write leaves "no rules" and
   // never a mix of old and new chunks.
   nvm3_deleteObject(nvm3_defaultHandle, NVM3_KEY_RULES_HDR);
@@ -856,6 +927,10 @@ static uint8_t commit(uint32_t *detail)
       return 4;
     }
     halResetWatchdog();
+  }
+  // Chunks of a longer program stored before: give their space back.
+  for (uint16_t i = (uint16_t)((staging_len + CHUNK_BYTES - 1) / CHUNK_BYTES); i < MAX_CHUNKS; i++) {
+    nvm3_deleteObject(nvm3_defaultHandle, NVM3_KEY_RULES_DATA + i);
   }
   rules_header_t hdr = { staging_len, crc16(staging, staging_len) };
   if (nvm3_writeData(nvm3_defaultHandle, NVM3_KEY_RULES_HDR, &hdr, sizeof(hdr)) != ECODE_NVM3_OK) {
@@ -929,9 +1004,11 @@ bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value)
       }
       *value = code_len ? (((uint32_t)crc16(code, code_len) << 16) | code_len) : 0;
       return true;
-    case H2_RULES_ATTR_DROPPED:
-      *value = stat_dropped;
+    case H2_RULES_ATTR_DROPPED: {
+      uint32_t used = store_used();
+      *value = ((used > 0xFFFF ? 0xFFFFu : used) << 16) | (stat_dropped > 0xFFFF ? 0xFFFFu : stat_dropped);
       return true;
+    }
     case H2_RULES_ATTR_FAULT:
       *value = ((uint32_t)last_fault << 24) | ((stat_faults > 255 ? 255u : stat_faults) << 16)
              | (last_fault_pc & 0xFFFF);
@@ -993,6 +1070,10 @@ bool h2_rules_attr_write(uint16_t attr_id, uint8_t zcl_type, const uint8_t *data
       case H2_RULES_OP_ERASE:
         staging_len = 0;
         h2_rules_erase();
+        *ok = true;
+        break;
+      case H2_RULES_OP_WALL:
+        h2_relay_set_combined((arg & 1) != 0);
         *ok = true;
         break;
       default:

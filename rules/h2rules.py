@@ -10,7 +10,7 @@ global variables are rejected: state lives in var_get/var_set.
 """
 import argparse, os, struct, subprocess, sys, tempfile
 
-MAX_BYTES = 4096      # H2_RULES_MAX_BYTES in common/h2_rules.h
+MAX_BYTES = 8192      # H2_RULES_MAX_BYTES in common/h2_rules.h
 
 def run(*cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
