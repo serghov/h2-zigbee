@@ -22,7 +22,7 @@
 // can read them, and writing one sets that section. The smart level follows what the
 // bulbs and the plug report, and the wired level follows the relays, whoever switches them.
 //
-// Needs firmware 0x87 or later (relay events).
+// Needs firmware 0x88 or later (relay events).
 #include "../lib/lights_tradfri.h"
 #include "../lib/sync.h"
 #include "../lib/scenes.h"
@@ -65,11 +65,14 @@ static const struct { u8 level; u16 mireds; } SMART[] = {
 // it was not, and cannot overtake a newer one. The last one is sent once more a second
 // after the last press, which also repairs a brightness left stuck by a very fast double
 // tap. Reports in that time are from our own commands and must not change the level.
+// A level written by the hub goes to the group instead: the hub does not write in quick
+// succession, and the allowance for hub-caused messages would not cover every lamp.
 #define TIMER_SETTLE   2
 #define SETTLE_MS      1000
 #define VAR_SETTLING   5                // 2 after a command, 1 after its repeat, 0 settled
 
 #define VAR_KNOWN      8                // one bit per lamp or plug that has been heard
+#define VAR_BY_GROUP   9                // 1: the level in force came from the hub, send to the group
 
 // The hub puts the bulbs' colour reporting back to 30 s whenever it configures them, so the
 // one-second setting is sent again once a day.
@@ -112,9 +115,8 @@ static __attribute__((noinline)) void wired_show(long level)
   glow(WIRED_TOP, WIRED_BOTTOM, level);
 }
 
-// Both relays are always commanded, also one that should already be right: the plate
-// cannot see the relays, and saying it again is what corrects one that is not. The
-// firmware sends the one that changes first.
+// The firmware leaves a relay alone that is already in the wanted state, and sends both
+// relays to the wall module in one message.
 static __attribute__((noinline)) void wired_set(long level)
 {
   if (level < 0 || level > 2) level = 0;
@@ -152,8 +154,11 @@ static __attribute__((noinline)) void smart_send(void)
   p[1] = (u8)(GROUP >> 8);
   p[2] = (u8)level;                     // scene 1 = half, scene 2 = full
   // To each lamp heard so far; to the group only while none has been (just after start).
-  long sent = level ? each_send(known, CL_SCENES, CMD_SCENE_RECALL, p, 3)
-                    : each_send(known, CL_ON_OFF, CMD_OFF, 0, 0);
+  long sent = 0;
+  if (!var_get(VAR_BY_GROUP)) {
+    sent = level ? each_send(known, CL_SCENES, CMD_SCENE_RECALL, p, 3)
+                 : each_send(known, CL_ON_OFF, CMD_OFF, 0, 0);
+  }
   if (!sent) {
     if (level) scene_recall(GROUP, level);
     else       lights_off(GROUP);
@@ -186,6 +191,7 @@ static __attribute__((noinline)) void teach_step(void)
   long level = (step < 6) ? 1 : 2;
   if (step >= 10) {
     var_set(VAR_TEACH, 0);
+    var_set(VAR_BY_GROUP, 0);
     smart_set(var_get(VAR_SMART));      // off: the hold that started this was an "off" press
     return;
   }
@@ -218,6 +224,9 @@ int on_event(struct h2_event *ev)
     return 1;
   }
   if (ev->source == H2_SRC_TIMER && ev->value == TIMER_HOURLY) {
+    // Ask the group for its state again: a lamp whose answer was lost at start, or that
+    // was dropped after a silent hour, is found (and sent to by itself) from then on.
+    group_read(GROUP, CL_ON_OFF, ATTR_ON_OFF);
     var_set(VAR_HOURS, var_get(VAR_HOURS) + 1);
     if (var_get(VAR_HOURS) >= 24) {
       report_within(GROUP, CL_COLOUR, ATTR_COLOUR_TEMP, 1, 900);
@@ -249,8 +258,8 @@ int on_event(struct h2_event *ev)
     // From off, only something reported coming on raises the level: an "off" report while
     // others have yet to report theirs must not.
     long came_on = (news == 1 && ev->type == H2_EV_REPORT && ev->value);
-    if (!sync_any_on(VAR_ON_MASK))                  smart_show(0);
-    else if (var_get(VAR_SETTLING))                 ;       // our own commands are still landing
+    if (var_get(VAR_SETTLING))                      ;       // our own commands are still landing
+    else if (!sync_any_on(VAR_ON_MASK))             smart_show(0);
     else if (level ? news == 2 : came_on)           smart_show((mireds && mireds < FULL_IF_BELOW) ? 2 : 1);
     return 1;
   }
@@ -260,7 +269,10 @@ int on_event(struct h2_event *ev)
     long level = var_get(ev->value);
     if (level < 0 || level > 2) level = 0;
     if (ev->value == VAR_WIRED)      wired_set(level);
-    else if (ev->value == VAR_SMART) smart_set(level);
+    else if (ev->value == VAR_SMART && var_get(VAR_TEACH) < 2) {   // not while teaching
+      var_set(VAR_BY_GROUP, 1);
+      smart_set(level);
+    }
     return 1;
   }
 
@@ -283,6 +295,7 @@ int on_event(struct h2_event *ev)
   if (b == WIRED_TOP || b == WIRED_BOTTOM) {
     wired_set(after_press(var_get(VAR_WIRED), b == WIRED_TOP));
   } else {
+    var_set(VAR_BY_GROUP, 0);
     smart_set(after_press(var_get(VAR_SMART), b == SMART_TOP));
   }
   return 1;

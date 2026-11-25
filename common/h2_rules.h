@@ -52,7 +52,7 @@
 #define H2_RULES_EV_TRIGGER      13     // a trigger was written from outside; value = its number
 #define H2_RULES_EV_REPORT       14     // another device reported an attribute the program watches
 #define H2_RULES_EV_FOUND        16     // a device reported (or answered a read) for the first time
-#define H2_RULES_EV_RELAY        17     // a relay was switched by something other than the program
+#define H2_RULES_EV_RELAY        17     // (switch variants) a relay was switched by something other than the program
                                         // (hub, binding, built-in button behaviour); value = relay
 #define H2_RULES_EV_LOST         15     // that device was dropped (silent for an hour, or it came
                                         // back under a new address): forget what it reported
@@ -61,7 +61,8 @@
 void h2_rules_init(bool safe_mode);
 
 // A relay changed state and the program did not do it: tell the program (H2_RULES_EV_RELAY).
-void h2_rules_relay_changed(uint8_t gang);
+// False if it could not be queued; say it again later.
+bool h2_rules_relay_changed(uint8_t gang);
 
 // Deliver an event. Returns true if a rule program handled it.
 bool h2_rules_event(uint8_t source, uint8_t type, int32_t value);
@@ -71,7 +72,9 @@ bool h2_rules_active(void);
 
 // Staged upload. Data is appended in order. Commit verifies, stores and activates;
 // it returns 0 on success, otherwise a non-zero reason (1 size, 2 incomplete,
-// 3 verification failed, 4 storage failed); *detail gets the failing instruction index.
+// 3 verification failed, 4 storage failed: the stored program is gone, the old one runs
+// until restart; 6 no room in the store: nothing was touched). *detail gets the failing
+// instruction index for 3, and for 6 the bytes the store would hold (at most 65535).
 bool h2_rules_upload_begin(uint16_t length);
 bool h2_rules_upload_data(const uint8_t *data, uint16_t length);
 bool h2_rules_upload_data_at(uint16_t offset, const uint8_t *data, uint16_t length);
@@ -91,15 +94,17 @@ void h2_rules_print_info(void);
 //                      verifies, stores and activates. The write fails if the program
 //                      is refused; read CONTROL for the reason.
 //              ERASE   remove the stored program
-//              WALL    argument bit 0: send both relays to the wall module in one message
-//                      (a trial, kept until restart; see h2_relay.h)
+//              WALL    argument bit 0: 1 = all relays in one wall-module message (the
+//                      default), 0 = one relay per message; kept until restart
 //            read: (flags << 24) | (result of the last commit << 16) | value
 //              flags   bit 0 a program is running, bit 1 an upload is in progress,
 //                      bit 2 safe mode (programs are stored but do not run)
 //              result  0 ok, 1 nothing to commit, 2 incomplete, 3 refused by the verifier,
-//                      4 storage error, 5 checksum mismatch
+//                      4 storage error (stored copy lost; the old program runs until
+//                      restart), 5 checksum mismatch, 6 no room in the store (old kept)
 //              value   bytes received so far while an upload is in progress, otherwise
-//                      the instruction the verifier refused
+//                      the instruction the verifier refused, or for result 6 the bytes
+//                      the store would have held
 //   DATA     octet string, write only: [offset lo][offset hi][program bytes...].
 //            Chunks are sent in order; repeating a chunk is harmless.
 //   INFO     uint32, read: (CRC16 of the installed program << 16) | its length; 0 = none

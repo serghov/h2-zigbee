@@ -21,16 +21,16 @@ static __attribute__((noinline)) void each_track(struct h2_event *ev, long var_m
   var_set(var_mask, ev->type == H2_EV_LOST ? (mask & ~bit) : (mask | bit));
 }
 
-// Send a cluster command to every device in the mask. Returns how many were sent to, so
-// the caller can fall back to the group while nobody has been heard yet.
+// Send a cluster command to every device in the mask. Returns how many it was handed over
+// for (a message refused by a limit does not count), so the caller can fall back to the
+// group while nobody has been heard yet.
 static __attribute__((noinline)) long each_send(long mask, long cluster, long command,
                                                 const void *payload, long len)
 {
   long sent = 0;
   for (long n = 0; n < 8; n++) {
     if (!(mask & (1 << n))) continue;
-    zcl_send(H2_TO_DEVICE(n), cluster, command, payload, len);
-    sent++;
+    if (zcl_send(H2_TO_DEVICE(n), cluster, command, payload, len) == 0) sent++;
   }
   return sent;
 }

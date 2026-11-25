@@ -45,17 +45,16 @@ typedef struct {
 
 const h2_relay_link_stats_t *h2_relay_link_stats(void);
 bool h2_relay_busy(void);      // a relay command is in flight: hold other requests back
-// Trial: send the wanted state of every relay in one message (switch variants only).
+// Send the wanted state of every relay in one message (switch variants; the default).
 void h2_relay_set_combined(bool on);
-// From now on, answer the wall module's status reports by sending the relay states again.
-// Call once the start-up state has been applied.
-void h2_relay_enable_reassert(void);
+// The wall module acknowledged the last command for this relay.
+bool h2_relay_in_step(uint8_t gang);
 void h2_relay_note_protection(uint16_t entry_id, uint32_t value);
 
 // Read-only diagnostics on the Opple cluster (uint32):
 //   LINK   (unanswered << 24) | (answered << 16) | (flags << 8) | (tries << 4) | status
 //          flags: bit 0 last command answered, bit 1 a command is in flight,
-//                 bit 3 both relays go in one message (trial),
+//                 bit 3 relays commanded together go in one message,
 //                 bit 2 a wall-module event (over-power, over-temperature, ...) was seen
 //   EVENT  (event count << 24) | (low byte of the value << 16) | entry id of the last event
 #define H2_RELAY_ATTR_LINK    0xFFC8

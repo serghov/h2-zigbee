@@ -5,7 +5,8 @@ import asyncio, aiohttp, json, os, sys, time
 # HA_URL / HA_TOKEN in the environment select another Home Assistant than the local one.
 CL, MFG = 0xFCC0, 0x115F
 CONTROL, DATA, INFO, FAULT = 0xFFC0, 0xFFC1, 0xFFC2, 0xFFC3
-RESULTS = {0: 'ok', 1: 'nothing to commit', 2: 'incomplete', 3: 'refused by the verifier', 4: 'storage error', 5: 'checksum mismatch'}
+RESULTS = {0: 'ok', 1: 'nothing to commit', 2: 'incomplete', 3: 'refused by the verifier', 4: 'storage error: stored copy lost, old program runs until restart', 5: 'checksum mismatch',
+           6: 'no room in the settings store, old program kept (value = bytes it would hold)'}
 
 def crc16(data):
     crc = 0xFFFF

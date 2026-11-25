@@ -159,11 +159,19 @@ static bool set_pending[H2_SWITCH_GANG_COUNT];
 // that only repeats a state (the plate cannot see the relay, so repeats are sent too, but
 // they must not hold up a real change).
 static bool set_changed[H2_SWITCH_GANG_COUNT];
-// Trial: one message carries the wanted state of every relay. Off unless switched on
-// (h2_relay_set_combined); whether the wall module accepts it is being tested.
-static bool set_combined;
-static bool reassert_enabled;
-static uint32_t reassert_tick;
+// One message carries every relay that has a command waiting (switch variants). The
+// 2-relay wall module accepts this and obeys both entries (living room, 2026-11-25); it
+// still switches its relays one after the other, a few hundred ms apart, by itself. A
+// relay nobody commanded is not in the message: what the plate holds for it is only a
+// belief. Can be turned off with h2_relay_set_combined(false): one relay per message.
+#if H2_HAS_DIMMER
+static bool set_combined = false;
+#else
+static bool set_combined = true;
+#endif
+// The last command that included this relay got no reply.
+static bool set_unacked[H2_SWITCH_GANG_COUNT];
+static uint8_t set_included;          // bit per gang in the message in flight
 
 static h2_relay_link_stats_t link_stats;
 
@@ -224,6 +232,9 @@ static void set_finish(bool acked, uint8_t status)
   link_stats.last_tries = set_tx.tries;
   link_stats.last_acked = acked;
   link_stats.last_status = status;
+  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    if (set_included & (1u << g)) set_unacked[g] = !acked;
+  }
   if (acked) {
     if (link_stats.acked < 255) link_stats.acked++;
   } else {
@@ -256,11 +267,14 @@ static void set_service(void)
         uint8_t n = 0;
         uint8_t next = set_next_gang();
         if (next != 0xFF) set_tx.gang = next;
+        set_included = 0;
 #if !H2_HAS_DIMMER
         if (set_combined) {
           for (uint8_t g = 0; g < h2_active_gang_count && g < H2_SWITCH_GANG_COUNT; g++) {
+            if (!set_pending[g]) continue;
             set_pending[g] = false;
             set_changed[g] = false;
+            set_included |= (uint8_t)(1u << g);
             n += relay_set_payload(g, payload + n);
           }
         }
@@ -268,6 +282,7 @@ static void set_service(void)
         if (n == 0) {
           set_pending[set_tx.gang] = false;
           set_changed[set_tx.gang] = false;
+          set_included = (uint8_t)(1u << set_tx.gang);
           n = relay_set_payload(set_tx.gang, payload);
         }
         set_tx.len = build_frame(set_tx.frame, RELAY_TYPE, RELAY_CMD_SET, seq++, payload, n);
@@ -300,26 +315,18 @@ static void set_service(void)
 
 void h2_relay_set_combined(bool on)
 {
+#if !H2_HAS_DIMMER
   set_combined = on;
+#else
+  (void)on;
+#endif
 }
 
-// The wall module sent a status report. The stock firmware answers each with the relay
-// states again; the plate has no other way to keep the two sides in step. At most once
-// every 4 s, in case the repeat itself makes the module report.
-void h2_relay_enable_reassert(void)
+// True if the wall module acknowledged the last command for this relay (or none was sent
+// yet): the state the plate holds for it can be taken as the relay's.
+bool h2_relay_in_step(uint8_t gang)
 {
-  reassert_enabled = true;
-}
-
-static void relay_reassert(void)
-{
-  if (!reassert_enabled) return;
-  uint32_t now = sl_sleeptimer_get_tick_count();
-  if (reassert_tick != 0 && sl_sleeptimer_tick_to_ms(now - reassert_tick) < 4000) return;
-  reassert_tick = now ? now : 1;
-  for (uint8_t g = 0; g < h2_active_gang_count && g < H2_SWITCH_GANG_COUNT; g++) {
-    relay_send_confirmed(g);
-  }
+  return gang < H2_SWITCH_GANG_COUNT && !set_unacked[gang];
 }
 
 void h2_relay_note_protection(uint16_t entry_id, uint32_t value)
@@ -553,10 +560,6 @@ void h2_relay_process_rx(void)
 
       uint16_t cmd_id = ((uint16_t)cmd_hi << 8) | cmd_lo;
       rx_callback(cmd_id, marker, data_le, data_size);
-#if !H2_HAS_DIMMER
-      // (not the entries of a reply to one of our own requests)
-      if (cmd_id == 0x0000 && rx_dispatch_buf[4] != RELAY_CMD_QUERY && rx_dispatch_buf[4] != 0x04) relay_reassert();
-#endif
 
       off += 3 + data_size;
     }

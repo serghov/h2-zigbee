@@ -32,7 +32,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000087  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000008A  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -236,8 +236,10 @@ static void rules_note_relay(uint8_t gang, bool tell)
   if (gang >= H2_SWITCH_GANG_COUNT) return;
   uint8_t now = (h2_relay_get(gang) == H2_RELAY_ON) ? 1 : 0;
   if (relay_told[gang] == now) return;
+  if (tell && !rule_switching_relay && !h2_rules_relay_changed(gang)) {
+    return;                       // could not be queued: still news the next time
+  }
   relay_told[gang] = now;
-  if (tell && !rule_switching_relay) h2_rules_relay_changed(gang);
 }
 
 static void sync_relay_to_cluster(uint8_t gang)
@@ -275,7 +277,6 @@ static void power_on_handler(sl_zigbee_af_event_t *event)
     relay_told[g] = (h2_relay_get(g) == H2_RELAY_ON) ? 1 : 0;   // start-up is not news: BOOT follows
     sync_relay_to_cluster(g);
   }
-  h2_relay_enable_reassert();
 }
 
 //--------------------------------------------------
@@ -405,6 +406,14 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
 void h2_rules_host_relay_set(uint8_t gang, uint8_t mode)
 {
   if (gang >= h2_active_gang_count) return;
+  // A relay that is already there is left alone: the plate cannot see the relays, but the
+  // wall module acknowledged the command that put it there, and saying it again costs an
+  // exchange that the next press may have to wait for. (A hub On or Off is always passed
+  // on, so switching from the hub brings the two back in step if they ever differ.)
+  if (mode != 2 && h2_relay_in_step(gang)
+      && (h2_relay_get(gang) == H2_RELAY_ON) == (mode != 0)) {
+    return;
+  }
   rule_switching_relay = true;       // its own doing: no H2_RULES_EV_RELAY for this
   if (mode == 2) {
     h2_relay_toggle(gang);
@@ -673,7 +682,9 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
   // Find which gang this endpoint belongs to
   for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     if (gangs[g].endpoint == endpoint) {
-      h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
+      if (!rule_switching_relay) {     // a rule program has already sent it
+        h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
+      }
       h2_led_update_relay_state(g, on_off_val != 0);
       h2_opple_save_relay_state(g, on_off_val != 0);
       rules_note_relay(g, true);

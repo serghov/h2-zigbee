@@ -63,7 +63,7 @@ struct h2_event {
                                       // ev->cluster / ev->attr now has the value ev->value
 #define H2_EV_FOUND        16         // source H2_SRC_REMOTE(n): that device was heard for the
                                       // first time (it answered a read, or reported)
-#define H2_EV_RELAY        17         // source H2_SRC_SYSTEM: something other than this program
+#define H2_EV_RELAY        17         // switches only. source H2_SRC_SYSTEM: something other than this program
                                       // switched a relay (hub, binding); value = the relay.
                                       // Radio messages here come from the small allowance.
 #define H2_EV_LOST         15         // source H2_SRC_REMOTE(n): that device is gone (silent for
@@ -127,8 +127,9 @@ H2_FN(12, long, log_value,    long tag, long value);                  // debug p
 #define H2_CLICKS_WAIT     1
 H2_FN(13, long, max_clicks,   long button, long clicks, long wait);
 // How long a press is held before it counts as HOLD, and how long a second click may
-// follow for DOUBLE, in milliseconds (hold 150..5000, double 100..1000; 0 = the default,
-// 300 each). For all buttons; back to the defaults when the program is replaced.
+// follow for DOUBLE, in milliseconds (hold 150..3000, double 100..1000; 0 = the default,
+// 300 each). For all buttons; back to the defaults when the program is replaced. The
+// hold time also applies to the long press that starts joining while off the network.
 H2_FN(19, long, press_times,  long hold_ms, long double_ms);
 
 int on_event(struct h2_event *ev);
