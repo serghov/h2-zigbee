@@ -10,7 +10,8 @@
 //   top button     from off: half. Each further press switches between half and full,
 //                  so a quick double press from off gives full.
 //   bottom button  off
-//   top LED        dim and bluish in half, bright purple in full, dark when off
+//   bottom LED     shows where to press to turn the section off, as on the other
+//                  switches: dim and bluish in half, bright purple in full, dark when off
 //
 // The bulbs keep half and full as scenes 1 and 2 of the group, so a press is one message
 // and each bulb changes brightness and colour in one step. The scenes have to be taught
@@ -94,10 +95,10 @@ static const struct { u8 red, blue; } GLOW[] = {
   [2] = { 255, 255 },                   // full: bright purple
 };
 
-static __attribute__((noinline)) void glow(long top_led, long bottom_led, long level)
+static __attribute__((noinline)) void glow(long lit_led, long dark_led, long level)
 {
-  led_set(top_led, GLOW[level].red, GLOW[level].blue);
-  led_set(bottom_led, 0, 0);
+  led_set(lit_led, GLOW[level].red, GLOW[level].blue);
+  led_set(dark_led, 0, 0);
 }
 
 // What a press does: the bottom button is off; the top one is half from off, and
@@ -112,7 +113,7 @@ static __attribute__((noinline)) long after_press(long level, long top)
 static __attribute__((noinline)) void wired_show(long level)
 {
   var_set(VAR_WIRED, level);
-  glow(WIRED_TOP, WIRED_BOTTOM, level);
+  glow(WIRED_BOTTOM, WIRED_TOP, level);
 }
 
 // The firmware leaves a relay alone that is already in the wanted state, and sends both
@@ -142,7 +143,7 @@ static __attribute__((noinline)) void wired_follow(void)
 static __attribute__((noinline)) void smart_show(long level)
 {
   var_set(VAR_SMART, level);
-  glow(SMART_TOP, SMART_BOTTOM, level);
+  glow(SMART_BOTTOM, SMART_TOP, level);
 }
 
 static __attribute__((noinline)) void smart_send(void)
