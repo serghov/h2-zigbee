@@ -8,7 +8,8 @@
 //
 // Both sections work the same way, and neither affects the other:
 //   top button     from off: half. Each further press switches between half and full,
-//                  so a quick double press from off gives full.
+//                  so a quick double press from off gives full. Buttons act as they go
+//                  down.
 //   bottom button  off
 //   bottom LED     shows where to press to turn the section off, as on the other
 //                  switches: dim and bluish in half, bright purple in full, dark when off
@@ -212,6 +213,7 @@ int on_event(struct h2_event *ev)
 {
   if (ev->type == H2_EV_BOOT) {
     var_public((1 << VAR_WIRED) | (1 << VAR_SMART));
+    press_times(0, 100);               // hold time unchanged, double-click window 100 ms
     wired_follow();                    // start from what the relays are
     sync_start(GROUP, 1);
     // The bulbs should report a colour change within a second (the hub sets 30 s).
@@ -285,13 +287,15 @@ int on_event(struct h2_event *ev)
     timer_stop(TIMER_TEACH);
     return 1;
   }
-  // A press that is held a little (HOLD) counts like a click, and so does the second click
-  // of a quick double press (DOUBLE).
-  if (ev->type != H2_EV_SINGLE && ev->type != H2_EV_DOUBLE && ev->type != H2_EV_HOLD) return 1;
-  if (b == SMART_BOTTOM && ev->type == H2_EV_HOLD) {
+  if (b == SMART_BOTTOM && ev->type == H2_EV_HOLD) {      // still down: perhaps the 5 s hold
     var_set(VAR_TEACH, 1);
     timer_start(TIMER_TEACH, TEACH_HOLD_MS);
+    return 1;
   }
+  // Act the moment a button goes down (PRESS), not when it comes up: waiting for the
+  // release costs as long as the finger stays on the button. A second tap within 100 ms of
+  // the first release is only reported when it is released (DOUBLE); it counts too.
+  if (ev->type != H2_EV_PRESS && ev->type != H2_EV_DOUBLE) return 1;
 
   if (b == WIRED_TOP || b == WIRED_BOTTOM) {
     wired_set(after_press(var_get(VAR_WIRED), b == WIRED_TOP));

@@ -12,7 +12,10 @@
 // On and Off commands whatever their transition setting says.
 //
 // Both buttons are taken over (PRESS returns 1), so the firmware's own press behaviour
-// is off for them.
+// is off for them. They act the moment a button goes down, not when it comes up: waiting
+// for the release costs as long as the finger stays on the button. A second tap within
+// 100 ms of the first release is only reported when it is released (DOUBLE); it counts
+// as a press too. Needs firmware 0x87 or later (press_times).
 #include "../h2_rules.h"
 
 #define GROUP        1
@@ -79,14 +82,15 @@ H2_INLINE void show_modes(void)
 int on_event(struct h2_event *ev)
 {
   if (ev->type == H2_EV_BOOT) {
+    press_times(0, 100);              // hold time unchanged, double-click window 100 ms
     show_modes();                     // after a restart: nothing is known to be on
     return 1;
   }
   if (ev->source != UPPER && ev->source != LOWER) {
     return 0;
   }
-  if (ev->type != H2_EV_SINGLE) {
-    return 1;                         // ours, but only clicks do anything
+  if (ev->type != H2_EV_PRESS && ev->type != H2_EV_DOUBLE) {
+    return 1;                         // ours, but only going down does anything
   }
 
   if (ev->source == UPPER) {
