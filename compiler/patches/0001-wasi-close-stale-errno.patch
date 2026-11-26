@@ -1,0 +1,18 @@
+diff --git a/llvm/lib/Support/Unix/Process.inc b/llvm/lib/Support/Unix/Process.inc
+index 1e6cb5f2..f2ad4a54 100644
+--- a/llvm/lib/Support/Unix/Process.inc
++++ b/llvm/lib/Support/Unix/Process.inc
+@@ -266,8 +266,11 @@ std::error_code Process::FixupStandardFileDescriptors() {
+ 
+ std::error_code Process::SafelyCloseFileDescriptor(int FD) {
+ #if defined(__wasi__)
+-  ::close(FD);
+-  return errnoAsErrorCode();
++  // Only consult errno if close() failed: it may hold a stale value (e.g. ENOENT from a
++  // failed header lookup), which would turn a successful close into a fatal IO error.
++  if (::close(FD) < 0)
++    return errnoAsErrorCode();
++  return std::error_code();
+ #else
+   // Create a signal set filled with *all* signals.
+   sigset_t FullSet, SavedSet;

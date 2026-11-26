@@ -114,6 +114,37 @@ The tool attempts a full flash backup, asks for confirmation, then performs a **
 
 Once custom firmware and its bootloader are installed, serve the matching variant's `.ota` file through the coordinator's OTA service. The OTA client starts when the network comes up. Transfer duration depends on the network; there is no fixed completion time.
 
+## Home Assistant: rule programs from a sidebar panel
+
+`custom_components/h2_rules` is a Home Assistant integration that adds an **H2 rules**
+panel to the sidebar (administrators only). In it you pick a switch, edit its rule program
+in C, compile it in the browser, and load it onto the switch through ZHA. It works from the
+phone app too.
+
+- The source of each switch is kept as a plain file in Home Assistant's configuration
+  directory: `h2_rules/<ieee>.c`, with the image last loaded from there next to it
+  (`.bpf`) and a small `.json`. They are ordinary files: edit them elsewhere, back them up,
+  keep them in git.
+- The switch stores only the compiled program. The panel shows whether that program is the
+  one built from the saved source (by checksum), and **More → Read program from switch**
+  reads it back and shows it disassembled, so a program whose source is lost can still be
+  read. (`zha/rules_zha.py <ieee> download file.bpf` does the same from a shell.)
+
+Setting it up:
+
+1. **ZHA quirk.** The switches need this project's quirk, which the integration does not
+   install: copy `zha/h2_zigbee.py` into your custom quirks directory, make sure
+   `configuration.yaml` has `zha: custom_quirks_path: /config/custom_zha_quirks`, and
+   restart Home Assistant.
+2. **The integration.** Copy `custom_components/h2_rules` into `config/custom_components/`
+   (or add this repository to HACS as a custom repository of type "integration"), restart,
+   then add **H2 switch rules** under Settings → Devices & services.
+3. **The compiler.** Put `clang.wasm` into `custom_components/h2_rules/frontend/` (see
+   `compiler/README.md`; it is too large for git). Until it is there the panel says so.
+
+Reading a program back needs firmware 0x8B / 0x5E or later. After changing anything in
+`rules/`, run `tools/build_panel.py` so the panel's headers and examples follow.
+
 ## Validation and limitations
 
 Run the host checks from the repository root (Python 3 and a host C compiler are required):
@@ -142,3 +173,8 @@ No-neutral power management and LED time gradients are not implemented. Host tes
 | `h2_switch/config/zcl/`, `h2_dimmer/config/zcl/` | Endpoint and cluster definitions |
 | `h2_switch/h2_switch.slcp`, `h2_dimmer/h2_dimmer.slcp` | SDK project definitions |
 | `bootloader/`, `swd_flasher/`, `tests/` | Bootloader, initial installation and host checks |
+| `common/h2_rules.*`, `common/h2_bpf.*` | Rule engine and its eBPF interpreter |
+| `rules/` | Rule programs: API header, libraries, examples, `h2rules.py` (compile on a PC) |
+| `zha/` | ZHA quirk and a command-line tool for loading rule programs |
+| `custom_components/h2_rules/` | Home Assistant integration: sidebar panel, in-browser compiler front end, source storage |
+| `compiler/`, `tools/build_panel.py` | How the in-browser compiler and the panel's generated files are built |

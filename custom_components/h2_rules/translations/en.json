@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "H2 switch rules",
+        "description": "Adds a sidebar panel for writing rule programs for H2 switches running the h2-zigbee firmware, compiling them in the browser and loading them onto the switches through ZHA. The h2-zigbee ZHA quirk has to be installed separately (see the README)."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Already set up."
+    }
+  }
+}

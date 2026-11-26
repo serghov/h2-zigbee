@@ -16,3 +16,5 @@
 # SWD flasher
 swd_flasher/firmware/*.bin
 swd_flasher/backups/
+custom_components/h2_rules/frontend/clang.wasm*
+__pycache__/

@@ -1,0 +1,14 @@
+{
+  "domain": "h2_rules",
+  "name": "H2 switch rules",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["http", "panel_custom", "websocket_api"],
+  "after_dependencies": ["zha"],
+  "documentation": "https://github.com/serghov/h2-zigbee",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
