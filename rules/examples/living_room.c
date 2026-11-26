@@ -76,6 +76,10 @@ static const struct { u8 level; u16 mireds; } SMART[] = {
 #define VAR_KNOWN      8                // one bit per lamp or plug that has been heard
 #define VAR_BY_GROUP   9                // 1: the level in force came from the hub, send to the group
 
+// Off from full: the second relay is switched off this long after the master.
+#define TIMER_SECOND   0
+#define SECOND_LATER_MS 300
+
 // The hub puts the bulbs' colour reporting back to 30 s whenever it configures them, so the
 // one-second setting is sent again once a day.
 #define TIMER_HOURLY   3
@@ -122,8 +126,16 @@ static __attribute__((noinline)) void wired_show(long level)
 static __attribute__((noinline)) void wired_set(long level)
 {
   if (level < 0 || level > 2) level = 0;
-  relay_set(MASTER, level >= 1 ? H2_ON : H2_OFF);
-  relay_set(SECOND, level >= 2 ? H2_ON : H2_OFF);
+  if (level == 0 && relay_get(SECOND)) {
+    // Off from full: the wall module switches its relays one after the other, and the
+    // master is the one that puts the light out. So the master goes alone, at once, and
+    // the second relay follows a moment later, when nobody sees it.
+    relay_set(MASTER, H2_OFF);
+    timer_start(TIMER_SECOND, SECOND_LATER_MS);
+  } else {
+    relay_set(MASTER, level >= 1 ? H2_ON : H2_OFF);
+    relay_set(SECOND, level >= 2 ? H2_ON : H2_OFF);
+  }
   wired_show(level);
 }
 
@@ -220,6 +232,10 @@ int on_event(struct h2_event *ev)
     report_within(GROUP, CL_COLOUR, ATTR_COLOUR_TEMP, 1, 900);
     smart_show(var_get(VAR_SMART));
     timer_start(TIMER_HOURLY, HOUR_MS);
+    return 1;
+  }
+  if (ev->source == H2_SRC_TIMER && ev->value == TIMER_SECOND) {
+    relay_set(SECOND, var_get(VAR_WIRED) >= 2 ? H2_ON : H2_OFF);   // whatever the level is by now
     return 1;
   }
   if (ev->source == H2_SRC_SYSTEM && ev->type == H2_EV_RELAY) {
