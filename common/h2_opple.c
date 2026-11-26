@@ -292,6 +292,21 @@ static void handle_read_attributes(uint8_t endpoint, uint16_t source_node,
     appResponseData[appResponseLength++] = (uint8_t)(attr_id & 0xFF);
     appResponseData[appResponseLength++] = (uint8_t)(attr_id >> 8);
 
+#if H2_HAS_RULES
+    if (attr_id == H2_RULES_ATTR_DATA) {      // the installed program, a piece per read
+      if (appResponseLength + 2 + 2 + H2_RULES_READ_CHUNK > limit) {
+        appResponseLength -= 2;               // no room in this reply: leave it out
+        break;
+      }
+      appResponseData[appResponseLength++] = ZCL_STATUS_SUCCESS;
+      appResponseData[appResponseLength++] = ZCL_OCTET_STRING_ATTRIBUTE_TYPE;
+      uint8_t n = h2_rules_read_chunk(&appResponseData[appResponseLength + 1], 2 + H2_RULES_READ_CHUNK);
+      appResponseData[appResponseLength++] = n;
+      appResponseLength += n;
+      continue;
+    }
+#endif
+
     uint32_t scene_value;
     if (ext_attr_get(attr_id, &scene_value)) {
       appResponseData[appResponseLength++] = ZCL_STATUS_SUCCESS;

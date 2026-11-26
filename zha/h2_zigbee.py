@@ -26,13 +26,19 @@ class HexBytes(t.LVBytes):
     """Octet string that can also be given as a hex string.
 
     Home Assistant's `zha.set_zigbee_cluster_attribute` action only passes numbers and
-    strings, so rule program chunks are written as hex text.
+    strings, so rule program chunks are written as hex text, and read back as hex text.
     """
 
     def __new__(cls, value=b""):
         if isinstance(value, str):
             value = bytes.fromhex(value)
         return super().__new__(cls, value)
+
+    def __str__(self):
+        # What Home Assistant hands out when the attribute is read: hex text, like on writing.
+        return bytes(self).hex()
+
+    __repr__ = __str__
 
 
 def _attr(attr_id, attr_type, access="rw"):
@@ -103,7 +109,7 @@ class H2Cluster(XiaomiAqaraE1Cluster):
         led_indicator = _attr(0x0203, t.uint8_t)
         # Rule engine (common/h2_rules.h)
         rules_control = _attr(0xFFC0, t.uint32_t)
-        rules_data = _attr(0xFFC1, HexBytes, "w")
+        rules_data = _attr(0xFFC1, HexBytes, "rw")
         rules_info = _attr(0xFFC2, t.uint32_t, "r")
         rules_fault = _attr(0xFFC3, t.uint32_t, "r")
         # LED ownership bitmask (common/h2_led_ep.h)

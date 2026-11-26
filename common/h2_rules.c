@@ -47,6 +47,7 @@ static bool active;
 
 static uint8_t staging[H2_RULES_MAX_BYTES];
 static uint16_t staging_len;
+static uint16_t read_pos;          // where the next read of DATA starts
 static uint16_t staging_got;
 
 static int32_t vars[H2_RULES_VARS];
@@ -993,6 +994,20 @@ void h2_rules_init(bool safe_mode)
 // Access over Zigbee (attributes on the Opple cluster, see h2_rules.h)
 // ---------------------------------------------------------------------------
 
+uint8_t h2_rules_read_chunk(uint8_t *out, uint8_t max)
+{
+  if (max < 2) return 0;
+  uint16_t pos = read_pos > code_len ? code_len : read_pos;
+  uint16_t n = (uint16_t)(code_len - pos);
+  if (n > H2_RULES_READ_CHUNK) n = H2_RULES_READ_CHUNK;
+  if (n > (uint16_t)(max - 2)) n = (uint16_t)(max - 2);
+  out[0] = (uint8_t)pos;
+  out[1] = (uint8_t)(pos >> 8);
+  memcpy(out + 2, code + pos, n);
+  read_pos = (uint16_t)(pos + n);
+  return (uint8_t)(n + 2);
+}
+
 bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value)
 {
   switch (attr_id) {
@@ -1077,6 +1092,10 @@ bool h2_rules_attr_write(uint16_t attr_id, uint8_t zcl_type, const uint8_t *data
       case H2_RULES_OP_ERASE:
         staging_len = 0;
         h2_rules_erase();
+        *ok = true;
+        break;
+      case H2_RULES_OP_READ:
+        read_pos = arg;
         *ok = true;
         break;
       case H2_RULES_OP_WALL:

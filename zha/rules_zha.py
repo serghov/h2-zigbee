@@ -1,5 +1,5 @@
 """Upload a compiled rule program through ZHA (runs inside the Home Assistant container).
-usage: rules_zha.py <ieee> info | erase | load <file.bpf> | wall 0|1   (wall: both relays in one message, a trial)
+usage: rules_zha.py <ieee> info | erase | load <file.bpf> | download <file.bpf> | wall 0|1   (wall: both relays in one message, a trial)
 Needs the h2-zigbee quirk (attributes rules_control/rules_data/rules_info/rules_fault)."""
 import asyncio, aiohttp, json, os, sys, time
 # HA_URL / HA_TOKEN in the environment select another Home Assistant than the local one.
@@ -59,6 +59,28 @@ async def main():
             return c, i
         if mode == 'info':
             await show()
+        elif mode == 'download':        # the installed program, read back from the device (firmware 0x8B+)
+            i = await read(INFO)
+            if not i:
+                sys.exit('no program installed' if i == 0 else 'could not read the rule attributes')
+            want, crc, blob = i & 0xFFFF, i >> 16, b''
+            if not await write(CONTROL, 5 << 24):
+                sys.exit('the firmware does not support reading the program back')
+            while len(blob) < want:
+                r = await call({'type': 'zha/devices/clusters/attributes/value', 'attribute': DATA, **base})
+                try:
+                    part = bytes.fromhex(str(r.get('result')))
+                except ValueError:
+                    part = b''
+                if len(part) < 2 or (part[0] | (part[1] << 8)) != len(blob) or len(part) == 2:
+                    if not await write(CONTROL, (5 << 24) | len(blob)):     # out of step: seek and ask again
+                        sys.exit('read failed at offset %d' % len(blob))
+                    continue
+                blob += part[2:]
+            if crc16(blob) != crc:
+                sys.exit('checksum mismatch: read %04x, device says %04x' % (crc16(blob), crc))
+            open(sys.argv[3], 'wb').write(blob)
+            print('%d bytes read back, checksum %04x matches' % (len(blob), crc))
         elif mode == 'wall':
             print('wall:', 'ok' if await write(CONTROL, (4 << 24) | int(sys.argv[3])) else 'FAILED'); await show()
         elif mode == 'erase':

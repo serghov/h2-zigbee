@@ -94,6 +94,7 @@ void h2_rules_print_info(void);
 //                      verifies, stores and activates. The write fails if the program
 //                      is refused; read CONTROL for the reason.
 //              ERASE   remove the stored program
+//              READ    argument = offset: the next reads of DATA start there
 //              WALL    argument bit 0: 1 = all relays in one wall-module message (the
 //                      default), 0 = one relay per message; kept until restart
 //            read: (flags << 24) | (result of the last commit << 16) | value
@@ -105,8 +106,11 @@ void h2_rules_print_info(void);
 //              value   bytes received so far while an upload is in progress, otherwise
 //                      the instruction the verifier refused, or for result 6 the bytes
 //                      the store would have held
-//   DATA     octet string, write only: [offset lo][offset hi][program bytes...].
-//            Chunks are sent in order; repeating a chunk is harmless.
+//   DATA     octet string. Write: [offset lo][offset hi][program bytes...]; chunks are
+//            sent in order, repeating a chunk is harmless. Read: the installed program,
+//            [offset lo][offset hi][up to 48 bytes], each read continuing where the last
+//            one ended (set the start with CONTROL READ; a read at the end returns the
+//            offset alone). Anything on the network can read it, as it can read variables.
 //   INFO     uint32, read: (CRC16 of the installed program << 16) | its length; 0 = none
 //   FAULT    uint32, read: (last fault code << 24) | (fault count << 16) | instruction
 //   VAR0..  int32, one attribute per rule variable (0xFFA0 + index). Only variables the
@@ -130,8 +134,13 @@ void h2_rules_print_info(void);
 #define H2_RULES_OP_COMMIT      2
 #define H2_RULES_OP_ERASE       3
 #define H2_RULES_OP_WALL        4
+#define H2_RULES_OP_READ        5
 
 bool h2_rules_attr_get(uint16_t attr_id, uint32_t *value);
+// The next piece of the installed program for a read of DATA: writes [offset lo][offset hi]
+// [bytes] to out (at most max, at least 2) and returns the length.
+#define H2_RULES_READ_CHUNK     48
+uint8_t h2_rules_read_chunk(uint8_t *out, uint8_t max);
 
 // Every incoming ZCL message, for the reports of other devices. Call from the variant's
 // pre-message callback (not in safe mode); it never consumes the message.
